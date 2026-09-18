@@ -52,8 +52,8 @@ module Lemans
       end
 
       def delete(result)
-        dir = root.glob("**/#{result.id}").find(&:directory?)
-        return unless dir
+        dir = result_dir(result)
+        return unless dir.directory?
 
         FileUtils.remove_entry(dir.to_s)
         prune_empty_parents(dir.parent)
@@ -93,6 +93,13 @@ module Lemans
       def read_artifact(result, path)
         file = result_dir(result).join(path)
         file.read if file.file?
+      end
+
+      def artifacts(result)
+        dir = result_dir(result)
+        return [] unless dir.directory?
+
+        dir.glob("**/*").select(&:file?).map { it.relative_path_from(dir).to_s }.sort
       end
 
       private
@@ -137,13 +144,14 @@ module Lemans
         tmp&.delete if tmp&.exist?
       end
 
-      # result.json is stored at <root>/<model-short>/<result-id>; runs moved
-      # into batch folders are found wherever they sit under the root.
+      # result.json is stored at <root>/<model-short>/<result-id>; a tree
+      # arranged by hand (runs grouped under batch directories) is searched
+      # for the id instead.
       def result_dir(result)
-        dir = root.join((result.model || result.agent).to_s.split("/").last.tr("#", "-"), result.id)
-        return dir if dir.directory?
+        canonical = root.join((result.model || result.agent).to_s.split("/").last.to_s.tr("#", "-"), result.id)
+        return canonical if canonical.directory?
 
-        root.glob("**/#{result.id}").find(&:directory?) || dir
+        root.glob("**/#{result.id}").find(&:directory?) || canonical
       end
     end
   end
