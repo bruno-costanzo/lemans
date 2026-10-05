@@ -104,7 +104,6 @@ module Lemans
     option :reverify, type: :boolean, default: false,
                       desc: "Grade the last verified step again (with the current tests) and go on from there"
     option :allow_scored, type: :boolean, default: false, desc: "Restart a scored run (--reverify always may)"
-    option :force, type: :boolean, default: false, aliases: "-f", desc: "Restart even if the task or bench changed since"
     def restart(*runs)
       raise Thor::Error, "lemans: name the run(s) to restart" if runs.empty?
       raise Thor::Error, "lemans: --recover and --reverify exclude each other" if options[:recover] && options[:reverify]
@@ -127,8 +126,7 @@ module Lemans
       tasks = filter_tasks(config.tasks, name: sources.map(&:task).uniq)
 
       mode = (:recover if options[:recover]) || (:reverify if options[:reverify])
-      runner = Runner.new(config, tasks, store:, restarts: sources, restart_mode: mode,
-                                         force: options[:force], allow_scored: options[:allow_scored])
+      runner = Runner.new(config, tasks, store:, restarts: sources, restart_mode: mode, allow_scored: options[:allow_scored])
 
       execute(runner, store, tasks)
     rescue ConfigError => e

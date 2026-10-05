@@ -20,10 +20,10 @@ module Lemans
 
     attr_reader :config, :tasks, :store, :reporter
 
-    private attr_reader :resuming, :restarts, :restart_mode, :forced, :allow_scored, :executor
+    private attr_reader :resuming, :restarts, :restart_mode, :allow_scored, :executor
 
     def initialize(config, tasks, store: nil, reporter: nil, executor: nil, resume: false,
-                   restarts: [], restart_mode: nil, force: false, allow_scored: false)
+                   restarts: [], restart_mode: nil, allow_scored: false)
       @config = config
       @tasks = tasks
       @store = store
@@ -32,7 +32,6 @@ module Lemans
       @resuming = resume
       @restarts = restarts
       @restart_mode = restart_mode
-      @forced = force
       @allow_scored = allow_scored
     end
 
@@ -85,8 +84,8 @@ module Lemans
       attempts
     end
 
-    # A reverification exists to grade with changed tests, so it neither
-    # minds a scored run nor a changed digest.
+    # A run named for a restart is restarted on purpose: a changed task or
+    # bench is the operator's call, and a reverification may grade a scored run.
     def restart_attempt(restart)
       refuse = ->(reason) { raise ConfigError, "cannot restart #{restart.id}: #{reason}" }
       task = tasks.find { it.name == restart.task }
@@ -103,10 +102,6 @@ module Lemans
         refuse.("it has no #{history} to recover from") unless store&.read_artifact(restart, history)
       else
         refuse.("no step was settled before it failed") if restart.settled_steps.zero?
-      end
-
-      if restart_mode != :reverify && !forced && (restart.task_digest != task.digest || restart.profile_digest != task.config.digest)
-        refuse.("the task or bench changed since (--force to restart anyway)")
       end
 
       Task.new(restart.model, task, store:, index: restart.index || 1, restart_from: restart, restart_mode:)

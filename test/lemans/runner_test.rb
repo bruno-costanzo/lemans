@@ -79,16 +79,14 @@ class RunnerTest < Minitest::Test
 
     assert_includes error.message, "no step was settled"
 
-    error = assert_raises(Lemans::ConfigError) { restart.(failed.(task_digest: "0" * 16)) }
-
-    assert_includes error.message, "changed since"
-    assert_equal 1, Lemans::Runner.new(config, config.tasks, restarts: [ failed.(task_digest: "0" * 16) ], force: true).attempts.size
+    # A run named for a restart is restarted on purpose, changed task or not.
+    assert_equal 1, restart.(failed.(task_digest: "0" * 16)).size
 
     # A batch keeps each run's own agent and model, and lists every refusal before running any.
-    batch = [ failed.(agent: "miniswen"), failed.(), failed.().completed!(:completed), failed.(task_digest: "0" * 16) ]
+    batch = [ failed.(agent: "miniswen"), failed.(), failed.().completed!(:completed), failed.(phases: %i[environment_setup agent.1]) ]
     error = assert_raises(Lemans::ConfigError) { Lemans::Runner.new(config, config.tasks, restarts: batch).attempts }
 
-    assert_equal [ "already scored", "changed since" ], error.message.lines.map { it[/already scored|changed since/] }
+    assert_equal [ "already scored", "no step was settled" ], error.message.lines.map { it[/already scored|no step was settled/] }
 
     attempts = Lemans::Runner.new(config, config.tasks, restarts: batch.first(2)).attempts
 
@@ -112,7 +110,7 @@ class RunnerTest < Minitest::Test
     end
     graded = build.(phases: %i[environment_setup agent verifier], scored: true)
 
-    # A scored run restarts only when asked to; a reverification always may, digest changed or not.
+    # A scored run restarts only when asked to; a reverification always may.
     error = assert_raises(Lemans::ConfigError) { restart.(graded, restart_mode: :recover) }
 
     assert_includes error.message, "--allow-scored"
@@ -123,20 +121,20 @@ class RunnerTest < Minitest::Test
     assert_includes error.message, "never reached a verification"
 
     # Only a recoverable agent with a saved history recovers.
-    error = assert_raises(Lemans::ConfigError) { restart.(build.(phases: %i[environment_setup agent]), restart_mode: :recover, force: true) }
+    error = assert_raises(Lemans::ConfigError) { restart.(build.(phases: %i[environment_setup agent]), restart_mode: :recover) }
 
     assert_includes error.message, "oracle cannot recover a session"
 
     miniswen = Lemans::Config.load_file(BenchFixture::ROOT.to_s).tap { it.load_options(agent: "miniswen") }
     failed = build.(phases: %i[environment_setup agent], agent: "miniswen")
     error = assert_raises(Lemans::ConfigError) do
-      Lemans::Runner.new(miniswen, miniswen.tasks, store:, restarts: [ failed ], restart_mode: :recover, force: true).attempts
+      Lemans::Runner.new(miniswen, miniswen.tasks, store:, restarts: [ failed ], restart_mode: :recover).attempts
     end
 
     assert_includes error.message, "no agent.result.json to recover from"
 
     store.artifacts["agent.result.json"] = "{}"
-    attempts = Lemans::Runner.new(miniswen, miniswen.tasks, store:, restarts: [ failed ], restart_mode: :recover, force: true).attempts
+    attempts = Lemans::Runner.new(miniswen, miniswen.tasks, store:, restarts: [ failed ], restart_mode: :recover).attempts
 
     assert_equal 1, attempts.size
   end

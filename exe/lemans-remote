@@ -29,6 +29,13 @@
 #
 #     exe/lemans-remote run --bench ../ai-evals --retry-runs=./runs
 #
+#   Restart local runs remotely, with the options of `lemans restart` — one
+#   sandbox per run (--run-in-band for a single sandbox, --sync to wait and
+#   download). The runs travel with the bench; the new runs come back via
+#   pull-runs (the shipped copies do not):
+#
+#     exe/lemans-remote restart --bench ../ai-evals runs/b/model/task__AbC1234 task__XyZ5678 --reverify
+#
 #   Then watch, fetch, and clean up:
 #
 #     exe/lemans-remote status [--history] [--running | --complete] [-W [INTERVAL]]
@@ -81,6 +88,7 @@ module LemansRemote # :nodoc: all
   REMOTE_BENCH_DIR = "/task"
   REMOTE_BENCH_ARCHIVE = "/tmp/bench.tgz"
   REMOTE_RUNS_ARCHIVE = "/tmp/runs.tgz"
+  REMOTE_SOURCES_ARCHIVE = "/tmp/sources.tgz"
   REMOTE_LOG = "/tmp/lemans-remote-run.log"
   REMOTE_STATUS = "/tmp/lemans-remote-run.status"
   REMOTE_WRAPPER = "/tmp/lemans-remote-wrapper.sh"
@@ -546,8 +554,11 @@ module LemansRemote # :nodoc: all
     TIMED_OUT = 124
     CREATE_ATTEMPTS = 3
 
+    # `command` replaces the `lemans run` built from tasks/models/args; `sources`
+    # are run dirs (relative to `runs_dir`) shipped into the sandbox's runs/
+    # for the command to read, and dropped again before the results leave it.
     def initialize(bench:, snapshot:, run_id:, tasks:, models:, extra_args:, extra_env:,
-                   timeout_sec:, runs_dir:, keep:, sync:, shell:, launch_interval: 0)
+                   timeout_sec:, runs_dir:, keep:, sync:, shell:, launch_interval: 0, command: nil, sources: [])
       @bench = bench
       @snapshot = snapshot
       @run_id = run_id
@@ -561,6 +572,8 @@ module LemansRemote # :nodoc: all
       @sync = sync
       @shell = shell
       @launch_interval = launch_interval
+      @command = command
+      @sources = sources
       @started_at = Time.now.utc.iso8601
     end
 
@@ -666,6 +679,31 @@ module LemansRemote # :nodoc: all
       exec!(sandbox, "mkdir -p #{REMOTE_BENCH_DIR} && " \
                      "tar -xzf #{REMOTE_BENCH_ARCHIVE} -C #{REMOTE_BENCH_DIR} && " \
                      "rm -f #{REMOTE_BENCH_ARCHIVE}")
+      upload_sources(sandbox) if @sources.any?
+    end
+
+    def upload_sources(sandbox)
+      say :upload, "#{@sources.size} run(s) from #{@runs_dir}"
+      Dir.mktmpdir("lemans-remote") do |tmp|
+        archive = File.join(tmp, "sources.tgz")
+        _, err, status = Open3.capture3("tar", "-czf", archive, "-C", @runs_dir.to_s, *@sources)
+        raise "could not pack the runs: #{err}" unless status.success?
+
+        File.open(archive, "rb") do |file|
+          sandbox.fs.upload_file_stream(file, REMOTE_SOURCES_ARCHIVE, timeout: TRANSFER_TIMEOUT_SEC)
+        end
+      end
+      exec!(sandbox, "mkdir -p #{REMOTE_BENCH_DIR}/runs && " \
+                     "tar -xzf #{REMOTE_SOURCES_ARCHIVE} -C #{REMOTE_BENCH_DIR}/runs && " \
+                     "rm -f #{REMOTE_SOURCES_ARCHIVE}")
+    end
+
+    # The shipped runs are copies of local ones: archiving them back would
+    # resurrect whatever was clobbered locally in the meantime.
+    def drop_sources_command
+      return "true" if @sources.empty?
+
+      "(cd #{REMOTE_BENCH_DIR}/runs && rm -rf -- #{@sources.shelljoin})"
     end
 
     def execute(sandbox)
@@ -683,6 +721,8 @@ module LemansRemote # :nodoc: all
     end
 
     def remote_command
+      return @command if @command
+
       command = %w[lemans run --bench .]
       @tasks.each { command += [ "--task", it ] }
       @models.each { command += [ "--model", it ] }
@@ -718,6 +758,7 @@ module LemansRemote # :nodoc: all
         "tasks" => @tasks,
         "models" => @models,
         "args" => @extra_args,
+        "command" => remote_command,
         "lemans_version" => Lemans::VERSION,
         "snapshot" => @snapshot,
         "sandbox_id" => sandbox.id,
@@ -735,6 +776,7 @@ module LemansRemote # :nodoc: all
         (cd #{REMOTE_BENCH_DIR} && #{remote_command}) > #{REMOTE_LOG} 2>&1
         status=$?
         cp #{REMOTE_LOG} #{vault_dir}/run.log || true
+        #{drop_sources_command}
         if [ -d #{REMOTE_BENCH_DIR}/runs ]; then
           tar -czf #{vault_dir}/runs.tar.gz -C #{REMOTE_BENCH_DIR}/runs .
         fi
@@ -827,7 +869,7 @@ module LemansRemote # :nodoc: all
         return
       end
 
-      exec!(sandbox, "tar -czf #{REMOTE_RUNS_ARCHIVE} -C #{REMOTE_BENCH_DIR}/runs .")
+      exec!(sandbox, "#{drop_sources_command} && tar -czf #{REMOTE_RUNS_ARCHIVE} -C #{REMOTE_BENCH_DIR}/runs .")
       FileUtils.mkdir_p(@runs_dir)
       Dir.mktmpdir("lemans-remote") do |tmp|
         local = File.join(tmp, "runs.tgz")
@@ -970,6 +1012,67 @@ module LemansRemote # :nodoc: all
       failures, retried = launch_batches(bench, jobs, provisioner)
       finish_retry(planner, retried) if retry_groups
       say_status :detached, "`lemans-remote status` to watch, `lemans-remote pull-runs` to fetch results"
+      raise Thor::Error, "lemans-remote: failed to launch: #{failures.join("; ")}" if failures.any?
+    rescue Lemans::ConfigError, RuntimeError => e
+      raise Thor::Error, "lemans-remote: #{e.message}"
+    end
+
+    desc "restart RUN...", "Restart local runs on remote Daytona sandboxes, the way `lemans restart` does (one sandbox per run)"
+    option :bench, default: ".", desc: "Directory holding bench.yml"
+    option :runs_dir, default: "runs", desc: "Local directory holding the runs (sync mode: and receiving the new ones)"
+    option :recover, type: :boolean, default: false, desc: "Continue the failed step's agent session from its saved history"
+    option :reverify, type: :boolean, default: false,
+                      desc: "Grade the last verified step again (with the current tests) and go on from there"
+    option :allow_scored, type: :boolean, default: false, desc: "Restart a scored run (--reverify always may)"
+    option :max_output_tokens, type: :numeric, banner: "TOKENS", desc: "Cap the agent's output per model call"
+    option :concurrency, type: :numeric, aliases: "-c", desc: "Restarts in flight at once inside a sandbox (with --run-in-band)"
+    option :timeout, default: "6h", desc: "Give up on the remote run after this long"
+    option :sync, type: :boolean, default: false, desc: "Restart every run in one sandbox, wait, and download the results"
+    option :run_in_band, type: :boolean, default: false, aliases: %w[--runInBand],
+                         desc: "Async mode: restart every run in one sandbox instead of one sandbox per run"
+    option :keep, type: :boolean, default: false, desc: "Sync mode: leave the sandbox around for debugging"
+    option :env, repeatable: true, desc: "Forward an extra host ENV variable by name"
+    option :launch_interval, type: :numeric, default: 3,
+                             desc: "Async mode: seconds between consecutive launches (0 to disable)"
+    def restart(*runs)
+      raise Thor::Error, "lemans-remote: name the run(s) to restart" if runs.empty?
+      raise Thor::Error, "lemans-remote: --recover and --reverify exclude each other" if options[:recover] && options[:reverify]
+      raise Thor::Error, "lemans-remote: --launch-interval must not be negative" if options[:launch_interval].to_f.negative?
+
+      bench = Lemans::Config.load_file(options[:bench])
+      runs_root = Pathname(options[:runs_dir])
+      store = Lemans::Stores::FS.new(runs_root)
+      ids = runs.map { File.basename(it) }.uniq
+      found = store.fetch.select { ids.include?(it.id) }.to_h { [ it.id, it ] }
+      missing = ids - found.keys
+      raise Thor::Error, "lemans-remote: no run #{missing.join(", ")} under #{runs_root}" if missing.any?
+
+      sources = found.values_at(*ids)
+
+      # The sandbox would refuse them anyway: refuse here, before any sandbox starts
+      bench.load_options(model: sources.map(&:model).uniq)
+      Lemans::Runner.new(bench, bench.tasks, store:, restarts: sources, restart_mode: restart_mode,
+                                             allow_scored: options[:allow_scored]).attempts
+
+      provisioner = build_provisioner
+      raise Thor::Error, "lemans-remote: snapshot #{provisioner.name} not found — run `lemans-remote provision` first" unless provisioner.provisioned?
+
+      jobs = options[:sync] || options[:run_in_band] ? [ sources ] : sources.map { [ it ] }
+      Vault.ensure unless options[:sync]
+
+      say_status :fanout, "#{jobs.size} sandboxes, one per run, one every #{options[:launch_interval]}s" if jobs.size > 1
+      failures = []
+      jobs.each_with_index do |job, index|
+        sleep options[:launch_interval].to_f if index.positive? && options[:launch_interval].to_f.positive?
+        exit_code = launch_restart(bench, job, runs_root, provisioner)
+        exit exit_code if options[:sync] && !exit_code.zero?
+      rescue StandardError => e
+        raise if options[:sync]
+
+        failures << "#{job.map(&:id).join(",")} (#{e.message})"
+      end
+
+      say_status :detached, "`lemans-remote status` to watch, `lemans-remote pull-runs` to fetch results" unless options[:sync]
       raise Thor::Error, "lemans-remote: failed to launch: #{failures.join("; ")}" if failures.any?
     rescue Lemans::ConfigError, RuntimeError => e
       raise Thor::Error, "lemans-remote: #{e.message}"
@@ -1282,8 +1385,43 @@ module LemansRemote # :nodoc: all
       [ failures, launched ]
     end
 
-    def build_run_id(bench, tasks, models, attempt = nil)
+    def restart_mode = (:recover if options[:recover]) || (:reverify if options[:reverify])
+
+    def launch_restart(bench, sources, runs_root, provisioner)
+      tasks = sources.map(&:task).uniq
+      models = sources.map(&:model).uniq
+      Runner.new(
+        bench: bench,
+        snapshot: provisioner.name,
+        run_id: build_run_id(bench, tasks, models, kind: "restart"),
+        tasks: tasks,
+        models: models,
+        extra_args: "",
+        extra_env: options[:env] || [],
+        timeout_sec: seconds!(options[:timeout]).to_i,
+        runs_dir: runs_root.to_s,
+        keep: options[:keep],
+        sync: options[:sync],
+        shell: shell,
+        launch_interval: options[:launch_interval].to_f,
+        command: restart_command(sources),
+        sources: sources.map { |source| runs_root.glob("**/#{source.id}").find(&:directory?).relative_path_from(runs_root).to_s }
+      ).call
+    end
+
+    def restart_command(sources)
+      argv = [ "lemans", "restart", *sources.map(&:id), "--bench", ".", "--runs-dir", "runs" ]
+      argv << "--recover" if options[:recover]
+      argv << "--reverify" if options[:reverify]
+      argv << "--allow-scored" if options[:allow_scored]
+      argv += [ "--max-output-tokens", options[:max_output_tokens].to_i.to_s ] if options[:max_output_tokens]
+      argv += [ "-c", options[:concurrency].to_i.to_s ] if options[:concurrency]
+      argv.shelljoin
+    end
+
+    def build_run_id(bench, tasks, models, attempt = nil, kind: nil)
       parts = [ bench.root.expand_path.basename.to_s ]
+      parts << kind if kind
       parts << (tasks.size == 1 ? tasks.first : "#{tasks.size}tasks") if tasks.any?
       if models.any?
         short = models.first.split("/").last
