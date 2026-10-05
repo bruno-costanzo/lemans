@@ -136,6 +136,10 @@ module Lemans
       def as_json(**) = to_h
     end
 
+    Restart = Data.define(:trial, :step) do
+      def as_json(**) = to_h
+    end
+
     Step = Data.define(:outcome, :usage, :duration) do
       def as_json(**) = { outcome: outcome.as_json, usage: usage&.as_json, duration: }.compact
 
@@ -150,7 +154,7 @@ module Lemans
     attr_reader :id, :task, :agent, :model, :index,
                 :profile_digest, :task_digest, :revision
 
-    attr_accessor :tags, :metadata
+    attr_accessor :tags, :metadata, :restarted_from
 
     attr_reader :phases, :steps
 
@@ -171,6 +175,7 @@ module Lemans
       @metadata = {}
       @phases = []
       @steps = nil
+      @restarted_from = nil
 
       @id = id || "#{task}__#{SecureRandom.alphanumeric(7)}"
       @outcome = Outcome.new(:pending)
@@ -239,12 +244,39 @@ module Lemans
       self
     end
 
+    # A step is settled once the next one started: it passed its gate and left a savepoint.
+    def settled_steps
+      names = phases.map(&:name)
+      (1..steps.to_a.size).count { names.include?(:"agent.#{it + 1}") }
+    end
+
+    def restart!(source)
+      @restarted_from = Restart.new(trial: source.id, step: source.settled_steps + 1)
+      source.steps.first(source.settled_steps).each { step_completed!(it.outcome, it.usage, duration: it.duration) }
+      self
+    end
+
+    # Splices in the settled steps' phases, ending now, and moves this run's
+    # environment setup back in front of them, so the timeline reads as one run.
+    def adopt_phases!(source, now: Time.now.utc)
+      settled = source.phases.select { it.name.to_s[/\.(\d+)\z/, 1].to_i.between?(1, restarted_from.step - 1) }
+      delta = now - settled.last.finished_at
+
+      setup = phases.first
+      shift = source.phases.find { it.name == setup.name }.finished_at + delta - setup.finished_at
+      phases[0] = Phase.new(setup.name, started_at: setup.started_at + shift, finished_at: setup.finished_at + shift)
+
+      settled.each { phases << Phase.new(it.name, started_at: it.started_at + delta, finished_at: it.finished_at + delta) }
+      self
+    end
+
     private def aggregate_usage = steps.filter_map(&:usage).reduce(:+)
 
     def as_json(**)
       {
         trial: id, task:, agent:, model:, index:,
         profile_digest:, task_digest:, revision: revision&.as_json,
+        restarted_from: restarted_from&.as_json,
         lemans_version: VERSION,
         tags:, metadata:, phases: phases.map(&:as_json),
         steps: steps&.map(&:as_json),
@@ -264,6 +296,7 @@ module Lemans
         )
         result.tags = data[:tags] || []
         result.metadata = data[:metadata] || {}
+        result.restarted_from = Restart.new(**data[:restarted_from]) if data[:restarted_from]
         phases_from(data).each { result.phases << it }
 
         # Steps first: the stored outcome/usage below override the aggregates.

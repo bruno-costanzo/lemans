@@ -78,31 +78,37 @@ module Lemans
         return
       end
 
-      reporter =
-        if interactive?
-          BoardReporter.new(tasks: tasks.map(&:name), models: config.models,
-                            attempts: config.attempts, total: runner.attempts.size)
-        else
-          ProgressReporter.new(shell:, tasks: tasks.map(&:name))
-        end
-
-      reporter.start
-
-      summary = runner.run(reporter)
-
-      say ""
-      say_status :report, "collecting results from #{options[:runs_dir]}", :cyan
-      print_report Report.load(store)
-
-      exit 130 if summary.status == :interrupted
-      exit 1 if summary.status == :invalid
+      execute(runner, store, tasks)
     rescue ConfigError => e
       raise Thor::Error, "lemans: #{e.message}"
-    rescue Interrupt
-      say ""
-      exit 130
-    ensure
-      reporter&.stop
+    end
+
+    desc "restart RUN", "Continue a failed multistep run from its last settled step in a new run"
+    long_desc <<~DESC
+      RUN is a run directory or a trial id. The new run replays the settled steps' agent patches in a
+      fresh sandbox and starts at the next step; the failed run stays as it is.
+    DESC
+    option :bench, default: ".", desc: "Directory holding bench.yml"
+    option :runs_dir, default: "./runs", desc: "Directory holding the run; the new run goes there too"
+    option :backend, enum: Environments::BACKENDS.keys, desc: "Sandbox backend (default: daytona)"
+    option :max_output_tokens, type: :numeric, banner: "TOKENS",
+                               desc: "Cap the agent's output per model call (default: the provider's)"
+    option :force, type: :boolean, default: false, aliases: "-f", desc: "Restart even if the task or bench changed since"
+    def restart(run)
+      Miniswen.refresh_registry!
+
+      store = Stores::FS.new(options[:runs_dir], filterer: SecretsFilter.default)
+      id = File.basename(run)
+      source = store.fetch.find { it.id == id } || raise(Thor::Error, "lemans: no run #{id} under #{options[:runs_dir]}")
+
+      config = Config.load_file(options[:bench])
+      config.load_options(**options.transform_keys(&:to_sym), agent: source.agent, model: source.model, attempts: source.index)
+
+      tasks = filter_tasks(config.tasks, name: source.task)
+
+      execute(Runner.new(config, tasks, store:, restart: source, force: options[:force]), store, tasks)
+    rescue ConfigError => e
+      raise Thor::Error, "lemans: #{e.message}"
     end
 
     desc "clobber", "Delete run results"
@@ -183,6 +189,32 @@ module Lemans
     end
 
     private
+
+    def execute(runner, store, tasks)
+      reporter =
+        if interactive?
+          BoardReporter.new(tasks: tasks.map(&:name), models: runner.config.models,
+                            attempts: runner.config.attempts, total: runner.attempts.size)
+        else
+          ProgressReporter.new(shell:, tasks: tasks.map(&:name))
+        end
+
+      reporter.start
+
+      summary = runner.run(reporter)
+
+      say ""
+      say_status :report, "collecting results from #{options[:runs_dir]}", :cyan
+      print_report Report.load(store)
+
+      exit 130 if summary.status == :interrupted
+      exit 1 if summary.status == :invalid
+    rescue Interrupt
+      say ""
+      exit 130
+    ensure
+      reporter&.stop
+    end
 
     def filter_tasks(tasks, tags: nil, name: nil)
       tasks = tasks.dup

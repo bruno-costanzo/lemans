@@ -42,6 +42,11 @@ module Lemans
       raise NotImplementedError
     end
 
+    # Returns the paths of every artifact the result stored
+    def artifact_paths(result)
+      raise NotImplementedError
+    end
+
     # Returns the artifact's text, nil when the result never stored it
     def read_artifact(result, path)
       raise NotImplementedError

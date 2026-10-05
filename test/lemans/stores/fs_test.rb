@@ -80,6 +80,21 @@ class StoresFSTest < Minitest::Test
     end
   end
 
+  def test_artifacts_of_a_run_moved_into_a_batch_folder
+    with_store do |store|
+      result = build_result
+      store.save(result)
+      store.save_artifact(result, "diff", path: "agent.1.patch")
+      store.save_artifact(result, "log", path: "logs/server.1.log")
+      root = store.send(:root)
+      root.join("batch").mkpath
+      root.join("model-a").rename(root.join("batch/model-a"))
+
+      assert_equal [ "agent.1.patch", "logs/server.1.log" ], store.artifact_paths(result).sort
+      assert_equal "diff", store.read_artifact(result, "agent.1.patch")
+    end
+  end
+
   def test_secrets_are_filtered_from_persisted_files
     Dir.mktmpdir do |dir|
       store = Lemans::Stores::FS.new(dir, filterer: Lemans::SecretsFilter.new([ "super-secret-token" ]))

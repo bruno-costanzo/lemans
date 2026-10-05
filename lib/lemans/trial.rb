@@ -12,13 +12,14 @@ module Lemans
   class Trial
     attr_reader :task, :config, :model, :agent_name, :environment, :result
 
-    private attr_reader :agent, :store, :snapshot, :patch, :current_step_index
+    private attr_reader :agent, :store, :restart_from, :snapshot, :patch, :current_step_index
 
-    def initialize(task, model = nil, result: nil, store: nil, agent: nil, environment: nil)
+    def initialize(task, model = nil, result: nil, store: nil, agent: nil, environment: nil, restart_from: nil)
       @task = task
       @config = task.config
       @model = model || config.models.first
       @store = store
+      @restart_from = restart_from
 
       @agent = agent.is_a?(Agent) ? agent : Agents.build(agent || config.agent_name, profile: config.agent, model: @model)
       @agent_name = @agent.name
@@ -50,6 +51,8 @@ module Lemans
     end
 
     def run
+      restart! if restart_from
+
       phase(:environment_setup) do
         environment.start
 
@@ -64,13 +67,16 @@ module Lemans
         # Seal the git state to collect the agent's patch later
         @patch = Patch.new(task, environment)
         patch.seal!
+        patch.replay!(settled_patches) if restart_from
 
         agent.install(task, environment)
 
         environment.switch_network_policy!(config.agent.environment.network)
       end
 
-      each_step do |step_task|
+      result.adopt_phases!(restart_from) if restart_from
+
+      each_step(from: result.restarted_from&.step || 1) do |step_task|
         response =
           phase(:agent) do
             agent.run(step_task, environment)
@@ -166,15 +172,33 @@ module Lemans
       store.save_artifact(result, JSON.pretty_generate(trajectory.to_atif), path:)
     end
 
-    def each_step
+    def each_step(from: 1)
       return yield task unless task.multistep?
 
       catch(:halt) do
-        1.upto(task.steps) do |index|
+        from.upto(task.steps) do |index|
           resume_agent! if index > 1
           @current_step_index = index
           yield task.for_step(index)
         end
+      end
+    end
+
+    def restart!
+      result.restart!(restart_from)
+      settled = result.restarted_from.step - 1
+
+      store.artifact_paths(restart_from).each do |path|
+        next unless path[%r{\.(\d+)(?:\.[^./]+)?\z}, 1].to_i.between?(1, settled)
+
+        store.save_artifact(result, store.read_artifact(restart_from, path), path:)
+      end
+    end
+
+    def settled_patches
+      (1...result.restarted_from.step).map do |index|
+        store.read_artifact(restart_from, "agent.#{index}.patch") ||
+          raise(InfrastructureError, "#{restart_from.id} has no agent.#{index}.patch to replay")
       end
     end
 

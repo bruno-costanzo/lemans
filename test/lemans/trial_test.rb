@@ -243,4 +243,49 @@ class TrialTest < Minitest::Test
     # A failed agent phase grades nothing.
     assert_nil store.artifacts["verifier.log"]
   end
+
+  def test_a_restart_replays_the_settled_steps_and_continues
+    with_multistep_task do |task|
+      Dir.mktmpdir do |dir|
+        store = Lemans::Stores::FS.new(dir)
+        source = Lemans::Result.from_task(task, model: task.config.models.first, agent: "oracle")
+        %i[environment_setup agent.1 verifier.1 agent.2].each do |phase|
+          source.phase_started(phase)
+          source.phase_finished(phase)
+        end
+        source.step_completed!(:completed, Lemans::Result::Usage.zero, duration: 1.0)
+        source.failed!(:agent_error, "the provider went away")
+        store.save(source)
+        { "agent.1.patch" => "step one\n", "checks.1.txt" => "ran", "agent.2.patch" => "lost\n",
+          "trajectory.2.json" => "{}" }.each { |path, contents| store.save_artifact(source, contents, path:) }
+
+        env = sandbox
+        result = Lemans::Trial.new(task, agent: "oracle", environment: env, store:, restart_from: source).run
+
+        assert_equal :completed, result.status
+        assert_in_delta 1.0, result.reward
+        assert_equal Lemans::Result::Restart.new(trial: source.id, step: 2), result.restarted_from
+        assert_equal 2, result.steps.size
+        assert_equal %i[environment_setup agent.1 verifier.1 agent.2 verifier], result.phases.map(&:name)
+        assert_equal result.phases.map(&:started_at).sort, result.phases.map(&:started_at)
+
+        # Step 1's patch went into the fresh tree before the agent took over at step 2.
+        replay = env.commands.index { it.include?("apply --binary --whitespace=nowarn /tmp/lemans-agent.patch") }
+        oracle = env.commands.rindex { it.include?("apply --binary") }
+
+        assert_operator replay, :<, oracle
+        assert_equal [ "/tmp/lemans-agent.patch" ], env.uploads.map(&:last).grep(/agent\.patch/)
+
+        # The settled step's evidence came along; the failed step's did not.
+        artifacts = store.artifact_paths(result)
+
+        assert_equal "step one\n", store.read_artifact(result, "agent.1.patch")
+        assert_includes artifacts, "checks.1.txt"
+        assert_includes artifacts, "agent.patch"
+        assert_includes artifacts, "verifier.log"
+        refute_includes artifacts, "trajectory.2.json"
+        refute_equal "lost\n", store.read_artifact(result, "agent.2.patch")
+      end
+    end
+  end
 end

@@ -50,4 +50,42 @@ class RunnerTest < Minitest::Test
       assert_equal 1, resumed.attempts.size
     end
   end
+
+  def test_a_restart_runs_one_attempt_of_a_settled_failed_run
+    config = oracle_config
+    task = config.tasks.first
+    failed = lambda do |phases: %i[environment_setup agent.1 verifier.1 agent.2], **overrides|
+      result = Lemans::Result.from_task(task, model: "m/model-b", agent: "oracle", index: 3, **overrides)
+      phases.each do |phase|
+        result.phase_started(phase)
+        result.phase_finished(phase)
+      end
+      result.step_completed!(:completed, Lemans::Result::Usage.zero)
+      result.failed!(:agent_error, "the provider went away")
+    end
+    restart = ->(source) { Lemans::Runner.new(config, config.tasks, restart: source).attempts }
+
+    attempts = restart.(failed.())
+
+    assert_equal 1, attempts.size
+    assert_equal "m/model-b", attempts.first.model
+    assert_equal 3, attempts.first.index
+
+    error = assert_raises(Lemans::ConfigError) { restart.(failed.().completed!(:completed)) }
+
+    assert_includes error.message, "already scored"
+
+    error = assert_raises(Lemans::ConfigError) { restart.(failed.(phases: %i[environment_setup agent.1])) }
+
+    assert_includes error.message, "no step was settled"
+
+    error = assert_raises(Lemans::ConfigError) { restart.(failed.(task_digest: "0" * 16)) }
+
+    assert_includes error.message, "changed since"
+    assert_equal 1, Lemans::Runner.new(config, config.tasks, restart: failed.(task_digest: "0" * 16), force: true).attempts.size
+
+    error = assert_raises(Lemans::ConfigError) { restart.(failed.(agent: "miniswen")) }
+
+    assert_includes error.message, "it ran miniswen"
+  end
 end

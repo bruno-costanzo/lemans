@@ -20,14 +20,15 @@ module Lemans
       def_delegators :definition, :name, :config
       def_delegators :result, :id
 
-      private attr_reader :definition, :store, :reporter
+      private attr_reader :definition, :store, :reporter, :restart_from
 
-      def initialize(model, task_definition, index: 0, store: nil, reporter: nil)
+      def initialize(model, task_definition, index: 0, store: nil, reporter: nil, restart_from: nil)
         @model = model
         @definition = task_definition
         @index = index
         @store = store
         @reporter = reporter
+        @restart_from = restart_from
         @status = :pending
 
         # prepare the result object: it's used by the actual execution down the stack
@@ -55,7 +56,7 @@ module Lemans
       private
 
       def execute!
-        Trial.new(definition, model, store:, result:).run
+        Trial.new(definition, model, store:, result:, restart_from:).run
       end
     end
   end

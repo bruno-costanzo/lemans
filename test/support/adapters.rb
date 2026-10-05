@@ -127,5 +127,7 @@ class TestStore < Lemans::Store
     artifacts[path.to_s] = contents.is_a?(String) ? contents : File.read(contents)
   end
 
+  def artifact_paths(_result) = artifacts.keys
+
   def read_artifact(_result, path) = artifacts[path.to_s]
 end

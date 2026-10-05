@@ -61,6 +61,22 @@ module Lemans
         raise InfrastructureError, "could not savepoint the tree the step left behind" unless savepoint
       end
 
+      # Brings a fresh tree to where a failed run's settled steps left it: their
+      # patches applied in order, the result marked as the savepoint.
+      def replay!(patches)
+        patches.reject(&:empty?).each do |contents|
+          Tempfile.create(%w[agent .patch]) do |file|
+            file.write(contents)
+            file.flush
+            environment.upload(file.path, REMOTE_PATCH)
+          end
+
+          environment.exec!("#{git} apply --binary --whitespace=nowarn #{REMOTE_PATCH} && rm -f #{REMOTE_PATCH}", timeout:)
+        end
+
+        savepoint!
+      end
+
       # Puts the workdir back to the savepoint exactly: the verifier restored
       # the graded surfaces from the baseline and may have littered the tree,
       # and the next step's agent must find neither.

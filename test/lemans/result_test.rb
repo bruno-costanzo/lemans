@@ -134,6 +134,52 @@ class ResultTest < Minitest::Test
     assert_equal %i[environment_setup], result.phases.map(&:name)
   end
 
+  def failed_multistep_result
+    usage = Lemans::Result::Usage.new(input_tokens: 10, output_tokens: 5, cached_tokens: 0, steps: 2,
+                                      cost_usd: 0.1, cost_source: nil)
+    source = build_result
+    t0 = Time.utc(2026, 10, 5, 7, 0, 0)
+    [ [ :environment_setup, 0, 10 ], [ :"agent.1", 10, 100 ], [ :"verifier.1", 105, 120 ],
+      [ :"agent.2", 122, 200 ], [ :"verifier.2", 205, 220 ], [ :"agent.3", 222, 230 ] ].each do |name, from, to|
+      source.phase_started(name, t0 + from)
+      source.phase_finished(name, t0 + to)
+    end
+    3.times { source.step_completed!(:completed, usage, duration: 1.0) }
+    source.failed!(:agent_error, "the provider went away")
+  end
+
+  def test_restart
+    source = failed_multistep_result
+
+    assert_equal 2, source.settled_steps
+    assert_equal 0, build_result.settled_steps
+
+    result = build_result
+    now = Time.utc(2026, 10, 6, 12, 0, 0)
+    result.restart!(source)
+    result.phase_started(:environment_setup, now - 30)
+    result.phase_finished(:environment_setup, now - 5)
+    result.adopt_phases!(source, now:)
+
+    assert_equal Lemans::Result::Restart.new(trial: source.id, step: 3), result.restarted_from
+    assert_equal 2, result.steps.size
+    assert_in_delta 0.2, result.usage.cost_usd
+    assert_equal %i[environment_setup agent.1 verifier.1 agent.2 verifier.2], result.phases.map(&:name)
+
+    # The settled phases end now, the new setup moved back in front of them
+    # keeping its own length; the gaps of the original run survive.
+    assert_equal now, result.phases.last.finished_at
+    assert_equal now - 210, result.phases[1].started_at
+    assert_equal now - 210, result.phases[0].finished_at
+    assert_in_delta 25.0, result.phases[0].duration
+    assert_in_delta 235.0, result.duration
+
+    restored = Lemans::Result.from_json(JSON.parse(JSON.generate(result.as_json), symbolize_names: true))
+
+    assert_equal result.restarted_from, restored.restarted_from
+    assert_nil Lemans::Result.from_json(JSON.parse(JSON.generate(source.as_json), symbolize_names: true)).restarted_from
+  end
+
   def test_an_unknown_outcome_is_incompatible
     assert_raises(Lemans::Result::IncompatibleError) { Lemans::Result::Outcome.new(:gone_fishing) }
   end

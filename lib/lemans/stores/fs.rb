@@ -85,6 +85,11 @@ module Lemans
         nil
       end
 
+      def artifact_paths(result)
+        dir = result_dir(result)
+        dir.glob("**/*").select(&:file?).map { it.relative_path_from(dir).to_s } - [ FILENAME ]
+      end
+
       def read_artifact(result, path)
         file = result_dir(result).join(path)
         file.read if file.file?
@@ -132,9 +137,13 @@ module Lemans
         tmp&.delete if tmp&.exist?
       end
 
-      # result.json is stored at <root>/<model-short>/<result-id>
+      # result.json is stored at <root>/<model-short>/<result-id>; runs moved
+      # into batch folders are found wherever they sit under the root.
       def result_dir(result)
-        root.join((result.model || result.agent).to_s.split("/").last.tr("#", "-"), result.id)
+        dir = root.join((result.model || result.agent).to_s.split("/").last.tr("#", "-"), result.id)
+        return dir if dir.directory?
+
+        root.glob("**/#{result.id}").find(&:directory?) || dir
       end
     end
   end
