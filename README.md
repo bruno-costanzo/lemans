@@ -103,6 +103,8 @@ verifier:
   # restore: [test, bin]                            # [optional] paths restored from the pre-agent snapshot, so grading can't be tampered with
 ```
 
+On the Docker backend, `allowlist` sends traffic through a proxy container. Only tools that use `http_proxy`/`https_proxy` can reach the listed hosts. Host names must match exactly, and IP ranges are not supported. See [the proxy README](lib/lemans/environments/docker/proxy/README.md).
+
 A minimal task example—checking whether an agent can write "Hello, world" into a file:
 
 - `instruction.md`: the task itself (note the preamble about the training corpora and the frontmatter)

@@ -11,6 +11,8 @@ loader.ignore("#{__dir__}/miniswen.rb", "#{__dir__}/miniswen")
 loader.ignore("#{__dir__}/lemans/trial/verifier/assets")
 # templates/ holds the files `lemans init` scaffolds, not Ruby the harness loads.
 loader.ignore("#{__dir__}/lemans/cli/templates")
+# proxy/ holds the image the Docker backend runs for allowlists, not Ruby the harness loads.
+loader.ignore("#{__dir__}/lemans/environments/docker/proxy")
 loader.setup
 
 require "miniswen"

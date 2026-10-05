@@ -50,6 +50,57 @@ class DockerEnvironmentTest < Minitest::Test
     assert environment.network.public?
   end
 
+  def test_switch_network_policy_to_allowlist
+    environment, calls = started(answers: { "inspect" => [ 0, "bridge " ], "network inspect" => [ 1, "no such network" ],
+                                            "logs" => [ 0, "listening on 3128" ] })
+    proxy = "#{environment.container}-proxy"
+    net = "#{environment.container}-net"
+
+    environment.switch_network_policy!(policy("allowlist", %w[openrouter.ai rubygems.org]))
+
+    argvs = calls.map { it[:argv][1..] }
+    assert_includes argvs, [ "network", "disconnect", "bridge", environment.container ]
+    assert_includes argvs, [ "network", "create", "--internal", net ]
+    run = argvs.find { it.first == "run" }
+    assert_equal [ "--network", net ], run[run.index("--network"), 2]
+    assert_equal %w[openrouter.ai rubygems.org], run.last(2)
+    assert_includes argvs, [ "network", "connect", "bridge", proxy ]
+    assert_equal [ "network", "connect", net, environment.container ], argvs.last
+    assert environment.network.allowlist?
+
+    calls.clear
+    environment.exec("curl https://openrouter.ai", env: { "https_proxy" => "mine" })
+
+    assert_includes calls.last[:argv].each_cons(2).to_a, [ "--env", "http_proxy=http://#{proxy}:3128" ]
+    assert_includes calls.last[:argv].each_cons(2).to_a, [ "--env", "https_proxy=mine" ]
+
+    calls.clear
+    environment.stop
+
+    assert_equal [ [ "rm", "--force", proxy ], [ "network", "rm", net ] ], calls.drop(1).map { it[:argv][1..] }
+  end
+
+  def test_allowlist_start_and_limits
+    environment = environment_for(network: policy("allowlist", %w[rubygems.org]))
+    calls = scripted(environment, answers: { "logs" => [ 0, "listening on 3128" ] })
+
+    environment.start
+
+    proxy_run, container_run = calls.select { it[:argv][1] == "run" }.map { it[:argv] }
+    assert_equal "rubygems.org", proxy_run.last
+    assert_includes container_run.each_cons(2).to_a, [ "--network", "#{environment.container}-net" ]
+
+    error = assert_raises(Lemans::ConfigError) { environment_for(network: policy("allowlist", %w[10.0.0.0/8 rubygems.org])) }
+
+    assert_includes error.message, "host names only (10.0.0.0/8)"
+
+    silent = environment_for
+    scripted(silent, answers: { "logs" => [ 0, "" ] })
+    silent.define_singleton_method(:sleep) { |_| nil }
+
+    assert_raises(Lemans::InfrastructureError) { silent.send(:start_proxy!, %w[rubygems.org]) }
+  end
+
   def test_exec
     environment, calls = started(answers: { "exec" => [ 3, "went sideways" ] })
 
@@ -119,7 +170,7 @@ class DockerEnvironmentTest < Minitest::Test
     calls = []
     environment.define_singleton_method(:capture) do |*argv, timeout:, on_output: nil|
       calls << { argv:, timeout: }
-      answers.fetch(argv[1], [ 0, "" ])
+      answers.fetch(argv[1..2].join(" ")) { answers.fetch(argv[1], [ 0, "" ]) }
     end
     calls
   end
