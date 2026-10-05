@@ -1,5 +1,6 @@
 ## [Unreleased]
 
+- Support `lemans report path/to/runs` (in addition to `lemans report --runs-dir path/to/runs`)
 - Add `lemans restart <run> [--force]` to continue a failed multistep run from its last completed step as a new run.
 - Fix(miniswen): run Bash tool commands through `bash -c` in Local, Jail, and Docker; sandbox images must include Bash.
 

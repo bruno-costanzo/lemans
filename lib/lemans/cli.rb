@@ -165,8 +165,8 @@ module Lemans
       raise Thor::Error, "lemans: #{e.message}"
     end
 
-    desc "report", "Summarize run results as a table or CSV"
-    option :runs_dir, default: "runs", desc: "Directory holding run directories"
+    desc "report [RUNS_DIR]", "Summarize run results as a table or CSV"
+    option :runs_dir, default: "runs", desc: "Directory holding run directories (or pass it as RUNS_DIR)"
     option :tag, desc: "Only runs whose result carries this tag", repeatable: true
     option :task, desc: "Only these tasks' runs", repeatable: true
     option :metadata, banner: "KEY:VALUE", desc: "Only runs whose task metadata has this value (every pair must match)",
@@ -175,8 +175,8 @@ module Lemans
     option :aggregate, aliases: "-A", banner: "COLUMNS", lazy_default: "task-model",
                        desc: "Group results by 1-3 dash-joined columns (task, agent, model)"
     option :sort, aliases: "-S", banner: "COLUMN", desc: "Sort by a column"
-    def report
-      store = Stores::FS.new(options[:runs_dir])
+    def report(runs_dir = options[:runs_dir])
+      store = Stores::FS.new(runs_dir)
       results = Report.load(store, tags: options[:tag], names: options[:task],
                                    metadata: Report.metadata_filter(options[:metadata]))
       raise Thor::Error, "lemans: no matching results found" if results.empty?
