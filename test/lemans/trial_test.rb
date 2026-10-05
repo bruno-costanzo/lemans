@@ -134,7 +134,7 @@ class TrialTest < Minitest::Test
     result = Lemans::Trial.new(load_task, agent: "oracle", environment: env, store:).run
 
     assert_equal :agent_error, result.status
-    assert_includes store.artifacts.keys, "agent.patch"
+    assert_includes store.files.keys, "agent.patch"
   end
 
   def test_a_run_that_outspends_its_price_list_still_leaves_its_patch
@@ -147,7 +147,7 @@ class TrialTest < Minitest::Test
     result = Lemans::Trial.new(load_task, agent:, environment: sandbox, store:).run
 
     assert_equal :accounting_error, result.status
-    assert_includes store.artifacts.keys, "agent.patch"
+    assert_includes store.files.keys, "agent.patch"
   end
 
   def test_a_sandbox_that_dies_while_verifying_is_a_verifier_error
@@ -187,13 +187,13 @@ class TrialTest < Minitest::Test
       assert_equal %w[allowlist none allowlist none], env.policies.map(&:mode)
 
       # Indexed artifacts per step, unindexed compilations at the end.
-      assert_includes store.artifacts.keys, "agent.1.patch"
-      assert_includes store.artifacts.keys, "agent.2.patch"
-      assert_includes store.artifacts.keys, "agent.patch"
-      assert_includes store.artifacts.keys, "verifier.1.log"
-      assert_includes store.artifacts.keys, "verifier.log"
-      assert_includes store.artifacts.keys, "checks.1.txt"
-      assert_includes store.artifacts.keys, "checks.txt"
+      assert_includes store.files.keys, "agent.1.patch"
+      assert_includes store.files.keys, "agent.2.patch"
+      assert_includes store.files.keys, "agent.patch"
+      assert_includes store.files.keys, "verifier.1.log"
+      assert_includes store.files.keys, "verifier.log"
+      assert_includes store.files.keys, "checks.1.txt"
+      assert_includes store.files.keys, "checks.txt"
 
       # Step 1's indexed tests shipped under the unindexed remote name.
       assert_includes env.uploads.map(&:last), "/tests/verification_test.rb"
@@ -216,8 +216,8 @@ class TrialTest < Minitest::Test
       # Step 2 never ran: the gate saved its budget.
       assert_equal %i[environment_setup agent.1 verifier.1], result.phases.map(&:name)
       assert_equal 1, result.steps.size
-      assert_includes store.artifacts.keys, "agent.1.patch"
-      assert_nil store.artifacts["agent.patch"]
+      assert_includes store.files.keys, "agent.1.patch"
+      assert_nil store.files["agent.patch"]
       assert_predicate env, :stopped
     end
   end
@@ -237,11 +237,11 @@ class TrialTest < Minitest::Test
     assert_equal :agent_error, result.status
     assert_equal "the model went away", result.detail
     assert_equal result.id, trajectory.session_id
-    assert_includes store.artifacts.keys, "trajectory.json"
-    assert_includes store.artifacts.keys, "agent.patch"
-    assert_equal '{"status":"error"}', store.artifacts["agent.result.json"]
+    assert_includes store.files.keys, "trajectory.json"
+    assert_includes store.files.keys, "agent.patch"
+    assert_equal '{"status":"error"}', store.files["agent.result.json"]
     # A failed agent phase grades nothing.
-    assert_nil store.artifacts["verifier.log"]
+    assert_nil store.files["verifier.log"]
   end
 
   def test_a_restart_replays_the_settled_steps_and_continues
@@ -277,7 +277,7 @@ class TrialTest < Minitest::Test
         assert_equal [ "/tmp/lemans-agent.patch" ], env.uploads.map(&:last).grep(/agent\.patch/)
 
         # The settled step's evidence came along; the failed step's did not.
-        artifacts = store.artifact_paths(result)
+        artifacts = store.artifacts(result)
 
         assert_equal "step one\n", store.read_artifact(result, "agent.1.patch")
         assert_includes artifacts, "checks.1.txt"

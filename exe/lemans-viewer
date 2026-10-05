@@ -40,6 +40,8 @@ require "webrick"
 module LemansViewer # :nodoc: all
   class App
     TRAJECTORY = /\Atrajectory(?:\.(?<step>\d+))?\.json\z/
+    # Served from the result record, so the tab does not depend on how a store keeps it
+    RESULT_TAB = "result.json"
 
     private attr_reader :store
 
@@ -78,13 +80,15 @@ module LemansViewer # :nodoc: all
       result = find(id)
       return respond(404, "text/plain", "no run #{id}") unless result
 
-      artifacts = store.artifacts(result)
+      artifacts = [ RESULT_TAB, *store.artifacts(result) ].sort
       json(result: result.as_json, row: row_from(result), artifacts:, trajectories: trajectories(result, artifacts))
     end
 
     def artifact(id, path)
       result = find(id)
-      return respond(404, "text/plain", "no run #{id}") unless result && store.artifacts(result).include?(path)
+      return respond(404, "text/plain", "no run #{id}") unless result
+      return respond(200, "application/json", JSON.pretty_generate(result.as_json)) if path == RESULT_TAB
+      return respond(404, "text/plain", "no artifact #{path}") unless store.artifacts(result).include?(path)
 
       type = path.end_with?(".json") ? "application/json" : "text/plain; charset=utf-8"
       respond(200, type, store.read_artifact(result, path))

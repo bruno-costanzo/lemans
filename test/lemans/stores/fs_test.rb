@@ -53,7 +53,7 @@ class StoresFSTest < Minitest::Test
       root = store.send(:root)
       root.join("model-a").rename(root.join("batch-1"))
 
-      assert_equal %w[agent.patch logs/verifier.log result.json], store.artifacts(saved)
+      assert_equal %w[agent.patch logs/verifier.log], store.artifacts(saved)
       assert_equal "diff", store.read_artifact(saved, "agent.patch")
       assert_equal [ saved.id ], store.fetch.map(&:id)
       assert_empty store.artifacts(build_result)
@@ -95,21 +95,6 @@ class StoresFSTest < Minitest::Test
 
       assert_includes err, "collides"
       assert_equal "the checks ran", path.read
-    end
-  end
-
-  def test_artifacts_of_a_run_moved_into_a_batch_folder
-    with_store do |store|
-      result = build_result
-      store.save(result)
-      store.save_artifact(result, "diff", path: "agent.1.patch")
-      store.save_artifact(result, "log", path: "logs/server.1.log")
-      root = store.send(:root)
-      root.join("batch").mkpath
-      root.join("model-a").rename(root.join("batch/model-a"))
-
-      assert_equal [ "agent.1.patch", "logs/server.1.log" ], store.artifact_paths(result).sort
-      assert_equal "diff", store.read_artifact(result, "agent.1.patch")
     end
   end
 

@@ -99,12 +99,12 @@ end
 
 # A Store made of Hashes, so persistence can be asserted without a filesystem.
 class TestStore < Lemans::Store
-  attr_reader :results, :artifacts
+  attr_reader :results, :files
 
   def initialize
     super
     @results = []
-    @artifacts = {}
+    @files = {}
   end
 
   def fetch = results
@@ -122,12 +122,12 @@ class TestStore < Lemans::Store
   def save(result) = results << result
 
   def save_artifact(_result, contents, path:, force: false)
-    return if artifacts.key?(path.to_s) && !force
+    return if files.key?(path.to_s) && !force
 
-    artifacts[path.to_s] = contents.is_a?(String) ? contents : File.read(contents)
+    files[path.to_s] = contents.is_a?(String) ? contents : File.read(contents)
   end
 
-  def artifact_paths(_result) = artifacts.keys
+  def artifacts(_result) = files.keys.sort
 
-  def read_artifact(_result, path) = artifacts[path.to_s]
+  def read_artifact(_result, path) = files[path.to_s]
 end

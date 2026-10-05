@@ -85,11 +85,6 @@ module Lemans
         nil
       end
 
-      def artifact_paths(result)
-        dir = result_dir(result)
-        dir.glob("**/*").select(&:file?).map { it.relative_path_from(dir).to_s } - [ FILENAME ]
-      end
-
       def read_artifact(result, path)
         file = result_dir(result).join(path)
         file.read if file.file?
@@ -99,7 +94,7 @@ module Lemans
         dir = result_dir(result)
         return [] unless dir.directory?
 
-        dir.glob("**/*").select(&:file?).map { it.relative_path_from(dir).to_s }.sort
+        (dir.glob("**/*").select(&:file?).map { it.relative_path_from(dir).to_s } - [ FILENAME ]).sort
       end
 
       private

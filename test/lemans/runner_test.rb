@@ -133,7 +133,7 @@ class RunnerTest < Minitest::Test
 
     assert_includes error.message, "no agent.result.json to recover from"
 
-    store.artifacts["agent.result.json"] = "{}"
+    store.files["agent.result.json"] = "{}"
     attempts = Lemans::Runner.new(miniswen, miniswen.tasks, store:, restarts: [ failed ], restart_mode: :recover).attempts
 
     assert_equal 1, attempts.size

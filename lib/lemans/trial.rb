@@ -206,7 +206,7 @@ module Lemans
       result.restart!(restart_from, step: restart_step, mode: restart_mode)
       carried = restart_mode == :reverify ? %w[trajectory.json agent.result.json].map { restart_path(it) } : []
 
-      store.artifact_paths(restart_from).each do |path|
+      store.artifacts(restart_from).each do |path|
         next unless path[%r{\.(\d+)(?:\.[^./]+)?\z}, 1].to_i.between?(1, restart_step - 1) || carried.include?(path)
 
         store.save_artifact(result, store.read_artifact(restart_from, path), path:)
