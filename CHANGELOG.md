@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-05
+
 - `lemans restart --recover` continues the failed step's agent session
 - `lemans restart --reverify` grades the last verified step again and goes on from there; `--allow-scored` restarts scored runs.
 - miniswen: `--continue-from PATH` continues a session from its `--results-path` file.
