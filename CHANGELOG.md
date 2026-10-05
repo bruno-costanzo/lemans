@@ -4,7 +4,7 @@
 - `lemans restart --reverify` grades the last verified step again and goes on from there; `--allow-scored` restarts scored runs.
 - miniswen: `--continue-from PATH` continues a session from its `--results-path` file.
 - Docker: support the `allowlist` network mode through a proxy container on an internal network.
-- Support `lemans report path/to/runs` (in addition to `lemans report --runs-dir path/to/runs`)
+- Support `lemans report path/to/runs`, `lemans clobber path/to/runs`, and `lemans regrade path/to/runs` (in addition to `--runs-dir path/to/runs`)
 - Add `lemans restart <run>` to continue a failed multistep run from its last completed step as a new run.
 - Fix(miniswen): run Bash tool commands through `bash -c` in Local, Jail, and Docker; sandbox images must include Bash.
 

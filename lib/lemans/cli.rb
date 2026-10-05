@@ -136,22 +136,22 @@ module Lemans
       exit 130
     end
 
-    desc "clobber", "Delete run results"
-    option :runs_dir, default: "./runs", desc: "Directory holding run directories"
+    desc "clobber [RUNS_DIR]", "Delete run results"
+    option :runs_dir, default: "./runs", desc: "Directory holding run directories (or pass it as RUNS_DIR)"
     option :task, desc: "Only these tasks' runs", repeatable: true
     option :ttl, desc: "Only runs older than this (10m, 2h, 1d)"
     option :invalid, type: :boolean, default: false, desc: "Only runs that measured nothing (invalid or unreadable)"
     option :force, type: :boolean, default: false, aliases: "-f", desc: "Delete without asking"
-    def clobber
-      store = Stores::FS.new(options[:runs_dir])
+    def clobber(runs_dir = options[:runs_dir])
+      store = Stores::FS.new(runs_dir)
       clobber = Clobber.new(store, tasks: options[:task], ttl: options[:ttl], invalid: options[:invalid])
 
       doomed = clobber.matches
-      return say "lemans: nothing to clobber under #{options[:runs_dir]}" if doomed.empty?
+      return say "lemans: nothing to clobber under #{runs_dir}" if doomed.empty?
 
       unless options[:force]
         doomed.each { say it.id }
-        return say "lemans: nothing deleted" unless yes?("Delete #{doomed.size} run(s) under #{options[:runs_dir]}? [y/N]")
+        return say "lemans: nothing deleted" unless yes?("Delete #{doomed.size} run(s) under #{runs_dir}? [y/N]")
       end
 
       removed = clobber.execute!
@@ -160,15 +160,15 @@ module Lemans
       raise Thor::Error, "lemans: #{e.message}"
     end
 
-    desc "regrade", "Re-grade stored results from their checks.json after a verification_test.rb grading change"
+    desc "regrade [RUNS_DIR]", "Re-grade stored results from their checks.json after a verification_test.rb grading change"
     option :bench, default: ".", desc: "Directory holding bench.yml"
     option :task, desc: "Re-grade these tasks' runs", repeatable: true, required: true
-    option :runs_dir, default: "./runs", desc: "Directory holding run directories"
+    option :runs_dir, default: "./runs", desc: "Directory holding run directories (or pass it as RUNS_DIR)"
     option :mapping, banner: "PATH",
                      desc: "Grade by this checks.json-shaped file (every check `fail` or `fail (allowed)`, plus `grading`) " \
                            "instead of reading verification_test.rb"
-    def regrade
-      store = Stores::FS.new(options[:runs_dir])
+    def regrade(runs_dir = options[:runs_dir])
+      store = Stores::FS.new(runs_dir)
       tasks = filter_tasks(Config.load_file(options[:bench]).tasks, name: options[:task])
       raise Thor::Error, "lemans: --mapping re-grades one task at a time" if options[:mapping] && tasks.size > 1
 
@@ -184,7 +184,7 @@ module Lemans
       end
 
       say ""
-      say_status :report, "collecting results from #{options[:runs_dir]}", :cyan
+      say_status :report, "collecting results from #{runs_dir}", :cyan
       print_report Report.load(store, names: tasks.map(&:name))
     rescue ConfigError => e
       raise Thor::Error, "lemans: #{e.message}"
