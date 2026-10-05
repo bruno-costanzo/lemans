@@ -136,8 +136,10 @@ module Lemans
       def as_json(**) = to_h
     end
 
-    Restart = Data.define(:trial, :step) do
-      def as_json(**) = to_h
+    Restart = Data.define(:trial, :step, :mode) do
+      def initialize(trial:, step:, mode: nil) = super
+
+      def as_json(**) = to_h.compact
     end
 
     Step = Data.define(:outcome, :usage, :duration) do
@@ -250,23 +252,39 @@ module Lemans
       (1..steps.to_a.size).count { names.include?(:"agent.#{it + 1}") }
     end
 
-    def restart!(source)
-      @restarted_from = Restart.new(trial: source.id, step: source.settled_steps + 1)
-      source.steps.first(source.settled_steps).each { step_completed!(it.outcome, it.usage, duration: it.duration) }
+    # The step whose verification ran last, nil when none did
+    def verified_step
+      name = phases.reverse.find { it.name.to_s.match?(/\Averifier(\.\d+)?\z/) }&.name or return nil
+      name.to_s[/\.(\d+)\z/, 1]&.to_i || steps&.size || 1
+    end
+
+    # Carries over the steps before `step`; a reverification carries `step` itself too.
+    def restart!(source, step:, mode: nil)
+      @restarted_from = Restart.new(trial: source.id, step:, mode: mode&.to_s)
+      carried = mode == :reverify ? step : step - 1
+
+      if source.steps
+        source.steps.first(carried).each { step_completed!(it.outcome, it.usage, duration: it.duration) }
+      elsif carried.positive?
+        # A single-step run graded before keeps its agent outcome; a failed grading lost it.
+        completed!(source.scored? ? source.outcome : Outcome.new(:completed), source.usage)
+      end
       self
     end
 
-    # Splices in the settled steps' phases, ending now, and moves this run's
-    # environment setup back in front of them, so the timeline reads as one run.
-    def adopt_phases!(source, now: Time.now.utc)
-      settled = source.phases.select { it.name.to_s[/\.(\d+)\z/, 1].to_i.between?(1, restarted_from.step - 1) }
-      delta = now - settled.last.finished_at
+    # Splices in the named phases of the source run, shifted so that its
+    # `through` phase ends now, and moves this run's environment setup back in
+    # front of them: the timeline reads as one run.
+    def adopt_phases!(source, names, through: names.last, now: Time.now.utc)
+      delta = now - source.phases.find { it.name == through }.finished_at
 
       setup = phases.first
       shift = source.phases.find { it.name == setup.name }.finished_at + delta - setup.finished_at
       phases[0] = Phase.new(setup.name, started_at: setup.started_at + shift, finished_at: setup.finished_at + shift)
 
-      settled.each { phases << Phase.new(it.name, started_at: it.started_at + delta, finished_at: it.finished_at + delta) }
+      source.phases.select { names.include?(it.name) }.each do |phase|
+        phases << Phase.new(phase.name, started_at: phase.started_at + delta, finished_at: phase.finished_at + delta)
+      end
       self
     end
 

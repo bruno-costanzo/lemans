@@ -13,6 +13,7 @@ module Lemans
     class MiniswenInstalled < Miniswen
       NAME = "miniswen-installed"
       RESULTS_PATH = "/tmp/lemans-miniswen.result.json"
+      HISTORY_PATH = "/tmp/lemans-miniswen.history.json"
       INSTALL_TIMEOUT_SEC = 300
       # The CLI enforces max-time itself, but between steps only: a command
       # started just before the deadline runs to its own exec timeout first,
@@ -31,8 +32,9 @@ module Lemans
 
       # An in-sandbox run self-reports: everything but the verifier's reward
       # comes from a file the sandbox wrote.
-      def obtain_result(task, environment)
-        run = environment.exec(command_for(task), timeout: outer_timeout, env: provider_env(environment))
+      def obtain_result(task, environment, history)
+        upload_history(environment, history) if history
+        run = environment.exec(command_for(task, history:), timeout: outer_timeout, env: provider_env(environment))
 
         begin
           Tempfile.create(%w[miniswen .result.json]) do |file|
@@ -47,7 +49,7 @@ module Lemans
         end
       end
 
-      attr_reader :raw_result
+      def raw_result_for(_run_result) = @raw_result
 
       def outer_timeout = profile.timeout + profile.exec_timeout + EXEC_SLACK_SEC
 
@@ -64,9 +66,18 @@ module Lemans
         policy.mode == "allowlist" ? policy.domains : []
       end
 
-      def command_for(task)
+      def upload_history(environment, history)
+        Tempfile.create(%w[miniswen .history.json]) do |file|
+          file.write(JSON.generate(history.to_h))
+          file.flush
+          environment.upload(file.path, HISTORY_PATH)
+        end
+      end
+
+      def command_for(task, history: nil)
         argv = [ "miniswen", "-q", "--no-refresh-registry", "--jail",
-                "-m", model.to_s, "-p", task.instruction,
+                "-m", model.to_s,
+                *(history ? [ "--continue-from", HISTORY_PATH ] : [ "-p", task.instruction ]),
                 "--results-path", RESULTS_PATH,
                 "--max-steps", profile.step_limit, "--max-time", profile.timeout.to_i,
                 "--exec-timeout", profile.exec_timeout.to_i,

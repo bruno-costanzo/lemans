@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "time"
 require "miniswen/version"
 require "miniswen/ruby_llm"
 
@@ -261,25 +262,17 @@ module Miniswen
       @reporter = reporter
     end
 
-    def run(instruction)
-      uname = execute("uname -srvm").output.to_s.strip
-      @messages = [
-        { role: "system", content: SYSTEM_TEMPLATE },
-        { role: "user", content: format(INSTANCE_TEMPLATE,
-                                        instruction: instruction,
-                                        system_information: uname,
-                                        macos_sed_note: uname.start_with?("Darwin") ? "\n#{MACOS_SED_NOTE}" : "") }
-      ]
+    # With a `history` (the Result of an interrupted run), the session goes on
+    # where it stopped, under the budget the earlier part already spent.
+    def run(instruction = nil, history: nil)
+      if history
+        resume(history)
+      else
+        start(instruction)
+      end
 
-      @steps = 0
-      @cost = 0.0
-
-      @totals = { input_tokens: 0, output_tokens: 0, cached_tokens: 0, thinking_tokens: 0 }
-
-      @cost_known = true
       @consecutive_format_errors = 0
       @refused_turns = 0
-      @started_at = @clock.call
 
       loop do
         (status = limit_reached) and return finish(status)
@@ -328,6 +321,49 @@ module Miniswen
     end
 
     private
+
+    def start(instruction)
+      uname = execute("uname -srvm").output.to_s.strip
+      @messages = [
+        { role: "system", content: SYSTEM_TEMPLATE },
+        { role: "user", content: format(INSTANCE_TEMPLATE,
+                                        instruction: instruction,
+                                        system_information: uname,
+                                        macos_sed_note: uname.start_with?("Darwin") ? "\n#{MACOS_SED_NOTE}" : "") }
+      ]
+
+      @steps = 0
+      @cost = 0.0
+      @cost_known = true
+      @totals = { input_tokens: 0, output_tokens: 0, cached_tokens: 0, thinking_tokens: 0 }
+      @started_at = @clock.call
+    end
+
+    def resume(history)
+      @messages = answered_messages(history.messages)
+
+      @steps = history.steps.to_i
+      @cost = history.cost_usd.to_f
+      @cost_known = !history.cost_usd.nil?
+      @totals = { input_tokens: history.input_tokens.to_i, output_tokens: history.output_tokens.to_i,
+                  cached_tokens: history.cached_tokens.to_i, thinking_tokens: history.thinking_tokens.to_i }
+      @started_at = @clock.call - elapsed(history.messages)
+    end
+
+    # A turn whose calls did not all get a result cannot go back to a provider:
+    # it is dropped, and the model decides again from the tree it left.
+    def answered_messages(messages)
+      turn = messages.rindex { it[:role] == "assistant" && it[:tool_calls] }
+      return messages.dup unless turn
+
+      answered = messages[(turn + 1)..].filter_map { it[:tool_call_id] if it[:role] == "tool" }
+      messages[turn][:tool_calls].all? { answered.include?(it[:id]) } ? messages.dup : messages[0...turn]
+    end
+
+    def elapsed(messages)
+      times = messages.filter_map { Time.parse(it[:timestamp]) if it[:role] == "assistant" && it[:timestamp] }
+      times.empty? ? 0.0 : times.max - times.min
+    end
 
     def execute(command)
       environment.exec(command, timeout: exec_timeout, env: EXEC_ENV)

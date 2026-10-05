@@ -20,19 +20,22 @@ module Lemans
       def_delegators :definition, :name, :config
       def_delegators :result, :id
 
-      private attr_reader :definition, :store, :reporter, :restart_from
+      private attr_reader :definition, :store, :reporter, :restart_from, :restart_mode
 
-      def initialize(model, task_definition, index: 0, store: nil, reporter: nil, restart_from: nil)
+      def initialize(model, task_definition, index: 0, store: nil, reporter: nil, restart_from: nil, restart_mode: nil)
         @model = model
         @definition = task_definition
         @index = index
         @store = store
         @reporter = reporter
         @restart_from = restart_from
+        @restart_mode = restart_mode
         @status = :pending
 
-        # prepare the result object: it's used by the actual execution down the stack
-        @result = Result.from_task(definition, index:, model: model || config.models.first)
+        # prepare the result object: it's used by the actual execution down the stack;
+        # a restart keeps the agent of the run it restarts
+        @result = Result.from_task(definition, index:, model: model || config.models.first,
+                                               **({ agent: restart_from.agent } if restart_from))
       end
 
       def with_reporter(reporter)
@@ -56,7 +59,7 @@ module Lemans
       private
 
       def execute!
-        Trial.new(definition, model, store:, result:, restart_from:).run
+        Trial.new(definition, model, store:, result:, agent: restart_from&.agent, restart_from:, restart_mode:).run
       end
     end
   end

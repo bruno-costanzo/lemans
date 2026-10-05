@@ -81,34 +81,61 @@ module Lemans
       execute(runner, store, tasks)
     rescue ConfigError => e
       raise Thor::Error, "lemans: #{e.message}"
+    rescue Interrupt
+      say ""
+      exit 130
     end
 
-    desc "restart RUN", "Continue a failed multistep run from its last settled step in a new run"
+    desc "restart RUN...", "Continue failed multistep runs from their last settled step in new runs"
     long_desc <<~DESC
-      RUN is a run directory or a trial id. The new run replays the settled steps' agent patches in a
-      fresh sandbox and starts at the next step; the failed run stays as it is.
+      RUN is a run directory or a trial id; every run named restarts under the same options. The new run replays the settled steps' agent patches in a
+      fresh sandbox and starts at the next step; the failed run stays as it is. --recover also replays
+      the failed step's partial patch and lets the agent go on from its history; --reverify replays the
+      graded step's patch and runs its verification again.
     DESC
     option :bench, default: ".", desc: "Directory holding bench.yml"
-    option :runs_dir, default: "./runs", desc: "Directory holding the run; the new run goes there too"
+    option :runs_dir, default: "./runs", desc: "Directory holding the runs; the new runs go there too"
+    option :concurrency, type: :numeric, aliases: "-c", desc: "Restarts in flight at once (default: the bench's)"
     option :backend, enum: Environments::BACKENDS.keys, desc: "Sandbox backend (default: daytona)"
     option :max_output_tokens, type: :numeric, banner: "TOKENS",
                                desc: "Cap the agent's output per model call (default: the provider's)"
+    option :recover, type: :boolean, default: false,
+                     desc: "Continue the failed step's agent session from its saved history"
+    option :reverify, type: :boolean, default: false,
+                      desc: "Grade the last verified step again (with the current tests) and go on from there"
+    option :allow_scored, type: :boolean, default: false, desc: "Restart a scored run (--reverify always may)"
     option :force, type: :boolean, default: false, aliases: "-f", desc: "Restart even if the task or bench changed since"
-    def restart(run)
+    def restart(*runs)
+      raise Thor::Error, "lemans: name the run(s) to restart" if runs.empty?
+      raise Thor::Error, "lemans: --recover and --reverify exclude each other" if options[:recover] && options[:reverify]
+
       Miniswen.refresh_registry!
 
       store = Stores::FS.new(options[:runs_dir], filterer: SecretsFilter.default)
-      id = File.basename(run)
-      source = store.fetch.find { it.id == id } || raise(Thor::Error, "lemans: no run #{id} under #{options[:runs_dir]}")
+      ids = runs.map { File.basename(it) }.uniq
+      found = store.fetch.select { ids.include?(it.id) }.to_h { [ it.id, it ] }
+      missing = ids - found.keys
+      raise Thor::Error, "lemans: no run #{missing.join(", ")} under #{options[:runs_dir]}" if missing.any?
 
+      sources = found.values_at(*ids)
+
+      # The board lays out every model the runs used, as wide as their highest attempt
       config = Config.load_file(options[:bench])
-      config.load_options(**options.transform_keys(&:to_sym), agent: source.agent, model: source.model, attempts: source.index)
+      config.load_options(**options.transform_keys(&:to_sym), model: sources.map(&:model).uniq,
+                                                              attempts: sources.filter_map(&:index).max)
 
-      tasks = filter_tasks(config.tasks, name: source.task)
+      tasks = filter_tasks(config.tasks, name: sources.map(&:task).uniq)
 
-      execute(Runner.new(config, tasks, store:, restart: source, force: options[:force]), store, tasks)
+      mode = (:recover if options[:recover]) || (:reverify if options[:reverify])
+      runner = Runner.new(config, tasks, store:, restarts: sources, restart_mode: mode,
+                                         force: options[:force], allow_scored: options[:allow_scored])
+
+      execute(runner, store, tasks)
     rescue ConfigError => e
       raise Thor::Error, "lemans: #{e.message}"
+    rescue Interrupt
+      say ""
+      exit 130
     end
 
     desc "clobber", "Delete run results"
@@ -209,9 +236,6 @@ module Lemans
 
       exit 130 if summary.status == :interrupted
       exit 1 if summary.status == :invalid
-    rescue Interrupt
-      say ""
-      exit 130
     ensure
       reporter&.stop
     end

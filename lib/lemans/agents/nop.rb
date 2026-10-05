@@ -7,7 +7,7 @@ module Lemans
     class Nop < Agent
       NAME = "nop"
 
-      def run(_task, _environment)
+      def run(_task, _environment, history: nil)
         Response.new(outcome: Result::Outcome.new(:completed), usage: Result::Usage.zero)
       end
     end

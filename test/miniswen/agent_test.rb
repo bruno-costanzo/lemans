@@ -483,6 +483,52 @@ class MiniswenAgentTest < Minitest::Test
     assert_equal partial, restored
   end
 
+  def interrupted_history
+    stub_llm("ls /app")
+    fake_env.on("ls /app", "hello.txt")
+    build_agent(max_steps: 1)
+    first = agent.run("List the app directory.")
+    Miniswen::Agent::Result.from_h(JSON.parse(JSON.generate(first.to_h)))
+  end
+
+  def test_a_history_continues_the_session
+    history = interrupted_history
+    fake_env.commands.clear
+    stub_llm(SUBMIT)
+    build_agent(max_steps: 5)
+
+    result = agent.run(history:)
+
+    assert_equal :submitted, result.status
+    # No prompt was built: the uname belongs to a fresh session only.
+    assert_equal [ "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" ], fake_env.commands
+    assert_equal history.messages, result.messages.first(history.messages.size)
+    assert_includes RubyLLM::Test.last_request.messages.map(&:content).join, "hello.txt"
+    # The earlier part's budget carries over.
+    assert_equal 2, result.steps
+    assert_equal 200, result.input_tokens
+    assert_in_delta 0.02, result.cost_usd
+
+    spent = Miniswen::Agent::Result.from_h(JSON.parse(JSON.generate(history.to_h)))
+    build_agent(max_steps: 1)
+
+    assert_equal :step_limit, agent.run(history: spent).status
+  end
+
+  def test_a_history_drops_a_turn_with_unanswered_calls
+    history = interrupted_history
+    messages = history.messages.reject { it[:role] == "tool" }
+    stub_llm(SUBMIT)
+    build_agent(max_steps: 5)
+
+    result = agent.run(history: history.with(messages:))
+
+    assert_equal %w[system user], result.messages.first(2).map { it[:role] }
+    assert_equal "assistant", result.messages[2][:role]
+    assert_equal [ "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" ], result.messages[2][:tool_calls].map { it[:arguments]["command"] }
+    assert_equal 2, RubyLLM::Test.last_request.messages.size
+  end
+
   private
 
   attr_reader :agent, :fake_env

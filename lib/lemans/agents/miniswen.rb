@@ -21,9 +21,13 @@ module Lemans
         cost_limit: :cost_ceiling_reached
       }.freeze
 
-      def run(task, environment)
-        run_result = obtain_result(task, environment)
+      def self.recoverable? = true
+
+      def run(task, environment, history: nil)
+        history &&= ::Miniswen::Agent::Result.from_h(JSON.parse(history))
+        run_result = obtain_result(task, environment, history)
         trajectory = trajectory_for(run_result)
+        raw_result = raw_result_for(run_result)
 
         # A failed model call is still an answer: the trial saves the
         # trajectory as evidence before failing.
@@ -39,16 +43,17 @@ module Lemans
 
       private
 
-      def obtain_result(task, environment)
+      def obtain_result(task, environment, history)
         agent = agent_for(environment)
         begin
-          agent.run(task.instruction)
+          agent.run(task.instruction, history:)
         rescue InfrastructureError, ::Miniswen::InfrastructureError => e
           agent.partial_result(e.message)
         end
       end
 
-      def raw_result = nil
+      # The run as miniswen records it, signatures included: what a recovery continues from
+      def raw_result_for(run_result) = JSON.generate(run_result.to_h)
 
       def agent_for(environment)
         raise ConfigError, "miniswen needs a model to drive" if model.to_s.empty?

@@ -25,6 +25,7 @@ module Miniswen
       @jail = false
       @allowed_hosts = nil
       @workdir = nil
+      @history = nil
     end
 
     def run
@@ -56,7 +57,7 @@ module Miniswen
       agent = Agent.new(model:, reporter:, environment:, **options)
 
       begin
-        result = agent.run(instruction)
+        result = agent.run(instruction, history: @history && Agent::Result.from_h(JSON.parse(@history)))
       rescue StandardError => e
         write_results(agent.partial_result(error_message(e)))
         raise
@@ -105,7 +106,7 @@ module Miniswen
 
     def parse_args!
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: miniswen -m MODEL -p INSTRUCTION [...options]"
+        opts.banner = "Usage: miniswen -m MODEL (-p INSTRUCTION | --continue-from PATH) [...options]"
 
         opts.on("-m MODEL", "--model=MODEL", String,
                 "LLM to use (litellm format, e.g.: openrouter/openai/gpt-5.6-luna") do |v|
@@ -114,6 +115,10 @@ module Miniswen
 
         opts.on("-p INSTRUCTION", "--prompt=INSTRUCTION", String, "Instruction prompt") do |v|
           @instruction = File.file?(v) ? File.read(v) : v
+        end
+
+        opts.on("--continue-from=PATH", String, "Continue the session saved by --results-path at PATH (no -p needed)") do |v|
+          @history = File.read(v)
         end
 
         opts.on("--max-steps=STEPS", Integer, "Max steps count") do |v|
@@ -197,7 +202,7 @@ module Miniswen
       return if @refresh_registry
 
       raise "Use -m to specify the model" unless @model
-      raise "Please, provide instructions via -p option" unless @instruction
+      raise "Please, provide instructions via -p option" unless @instruction || @history
     end
   end
 end

@@ -63,7 +63,7 @@ class RunnerTest < Minitest::Test
       result.step_completed!(:completed, Lemans::Result::Usage.zero)
       result.failed!(:agent_error, "the provider went away")
     end
-    restart = ->(source) { Lemans::Runner.new(config, config.tasks, restart: source).attempts }
+    restart = ->(source) { Lemans::Runner.new(config, config.tasks, restarts: [ source ]).attempts }
 
     attempts = restart.(failed.())
 
@@ -82,10 +82,62 @@ class RunnerTest < Minitest::Test
     error = assert_raises(Lemans::ConfigError) { restart.(failed.(task_digest: "0" * 16)) }
 
     assert_includes error.message, "changed since"
-    assert_equal 1, Lemans::Runner.new(config, config.tasks, restart: failed.(task_digest: "0" * 16), force: true).attempts.size
+    assert_equal 1, Lemans::Runner.new(config, config.tasks, restarts: [ failed.(task_digest: "0" * 16) ], force: true).attempts.size
 
-    error = assert_raises(Lemans::ConfigError) { restart.(failed.(agent: "miniswen")) }
+    # A batch keeps each run's own agent and model, and lists every refusal before running any.
+    batch = [ failed.(agent: "miniswen"), failed.(), failed.().completed!(:completed), failed.(task_digest: "0" * 16) ]
+    error = assert_raises(Lemans::ConfigError) { Lemans::Runner.new(config, config.tasks, restarts: batch).attempts }
 
-    assert_includes error.message, "it ran miniswen"
+    assert_equal [ "already scored", "changed since" ], error.message.lines.map { it[/already scored|changed since/] }
+
+    attempts = Lemans::Runner.new(config, config.tasks, restarts: batch.first(2)).attempts
+
+    assert_equal %w[miniswen oracle], attempts.map { it.result.agent }
+  end
+
+  def test_restart_modes_and_scored_runs
+    config = oracle_config
+    task = config.tasks.first
+    store = TestStore.new
+    build = lambda do |phases:, agent: "oracle", scored: false|
+      result = Lemans::Result.from_task(task, model: "m/model-b", agent:, index: 1, task_digest: "0" * 16)
+      phases.each do |phase|
+        result.phase_started(phase)
+        result.phase_finished(phase)
+      end
+      scored ? result.completed!(:completed).graded!(0.0) : result.failed!(:agent_error, "the provider went away")
+    end
+    restart = lambda do |source, **options|
+      Lemans::Runner.new(config, config.tasks, store:, restarts: [ source ], **options).attempts
+    end
+    graded = build.(phases: %i[environment_setup agent verifier], scored: true)
+
+    # A scored run restarts only when asked to; a reverification always may, digest changed or not.
+    error = assert_raises(Lemans::ConfigError) { restart.(graded, restart_mode: :recover) }
+
+    assert_includes error.message, "--allow-scored"
+    assert_equal 1, restart.(graded, restart_mode: :reverify).size
+
+    error = assert_raises(Lemans::ConfigError) { restart.(build.(phases: %i[environment_setup agent]), restart_mode: :reverify) }
+
+    assert_includes error.message, "never reached a verification"
+
+    # Only a recoverable agent with a saved history recovers.
+    error = assert_raises(Lemans::ConfigError) { restart.(build.(phases: %i[environment_setup agent]), restart_mode: :recover, force: true) }
+
+    assert_includes error.message, "oracle cannot recover a session"
+
+    miniswen = Lemans::Config.load_file(BenchFixture::ROOT.to_s).tap { it.load_options(agent: "miniswen") }
+    failed = build.(phases: %i[environment_setup agent], agent: "miniswen")
+    error = assert_raises(Lemans::ConfigError) do
+      Lemans::Runner.new(miniswen, miniswen.tasks, store:, restarts: [ failed ], restart_mode: :recover, force: true).attempts
+    end
+
+    assert_includes error.message, "no agent.result.json to recover from"
+
+    store.artifacts["agent.result.json"] = "{}"
+    attempts = Lemans::Runner.new(miniswen, miniswen.tasks, store:, restarts: [ failed ], restart_mode: :recover, force: true).attempts
+
+    assert_equal 1, attempts.size
   end
 end

@@ -148,18 +148,23 @@ class ResultTest < Minitest::Test
     source.failed!(:agent_error, "the provider went away")
   end
 
+  def restarted(source, step:, mode: nil, names: nil, through: nil, now: Time.utc(2026, 10, 6, 12, 0, 0))
+    result = build_result.restart!(source, step:, mode:)
+    result.phase_started(:environment_setup, now - 30)
+    result.phase_finished(:environment_setup, now - 5)
+    result.adopt_phases!(source, names, **{ through:, now: }.compact)
+  end
+
   def test_restart
     source = failed_multistep_result
 
     assert_equal 2, source.settled_steps
     assert_equal 0, build_result.settled_steps
+    assert_equal 2, source.verified_step
+    assert_nil build_result.verified_step
 
-    result = build_result
     now = Time.utc(2026, 10, 6, 12, 0, 0)
-    result.restart!(source)
-    result.phase_started(:environment_setup, now - 30)
-    result.phase_finished(:environment_setup, now - 5)
-    result.adopt_phases!(source, now:)
+    result = restarted(source, step: 3, names: %i[agent.1 verifier.1 agent.2 verifier.2], now:)
 
     assert_equal Lemans::Result::Restart.new(trial: source.id, step: 3), result.restarted_from
     assert_equal 2, result.steps.size
@@ -178,6 +183,43 @@ class ResultTest < Minitest::Test
 
     assert_equal result.restarted_from, restored.restarted_from
     assert_nil Lemans::Result.from_json(JSON.parse(JSON.generate(source.as_json), symbolize_names: true)).restarted_from
+  end
+
+  def test_restart_modes
+    source = failed_multistep_result
+    now = Time.utc(2026, 10, 6, 12, 0, 0)
+
+    # A recovery aligns on the partial phase it continues, without copying it.
+    recovered = restarted(source, step: 3, mode: :recover, names: %i[agent.1 verifier.1 agent.2 verifier.2],
+                                  through: :"agent.3", now:)
+
+    assert_equal "recover", recovered.restarted_from.mode
+    assert_equal 2, recovered.steps.size
+    # agent.3 ran 8s, 2s after verifier.2: its continuation starts at now - 8.
+    assert_equal now - 10, recovered.phases.last.finished_at
+
+    # A reverification carries the graded step along with its agent phase.
+    reverified = restarted(source, step: 2, mode: :reverify, names: %i[agent.1 verifier.1 agent.2], now:)
+
+    assert_equal 2, reverified.steps.size
+    assert_equal %i[environment_setup agent.1 verifier.1 agent.2], reverified.phases.map(&:name)
+    assert_equal now, reverified.phases.last.finished_at
+
+    # A single-step run graded before keeps its agent outcome and usage.
+    single = build_result
+    single.phase_started(:agent)
+    single.phase_finished(:agent)
+    single.phase_started(:verifier)
+    single.phase_finished(:verifier)
+    single.completed!(:step_limit_reached, Lemans::Result::Usage.zero).graded!(0.0)
+
+    assert_equal 1, single.verified_step
+
+    regraded = build_result.restart!(single, step: 1, mode: :reverify)
+
+    assert_equal :step_limit_reached, regraded.status
+    assert_nil regraded.reward
+    assert_equal({ trial: single.id, step: 1, mode: "reverify" }, regraded.restarted_from.as_json)
   end
 
   def test_an_unknown_outcome_is_incompatible

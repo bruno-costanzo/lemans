@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- `lemans restart` takes several runs at once (`lemans restart RUN_1 RUN_2 --reverify -c 4`); each keeps its own agent and model.
+- `lemans restart --recover` continues the failed step's agent session; `lemans restart --reverify` grades the last verified step again and goes on from there; `--allow-scored` restarts scored runs.
+- miniswen: `--continue-from PATH` continues a session from its `--results-path` file.
+- Harness-side `miniswen` saves `agent.result.json` (the raw run result), as `miniswen-installed` already does.
 - Docker: support the `allowlist` network mode through a proxy container on an internal network.
 - Support `lemans report path/to/runs` (in addition to `lemans report --runs-dir path/to/runs`)
 - Add `lemans restart <run> [--force]` to continue a failed multistep run from its last completed step as a new run.

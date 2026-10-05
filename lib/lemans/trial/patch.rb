@@ -61,20 +61,13 @@ module Lemans
         raise InfrastructureError, "could not savepoint the tree the step left behind" unless savepoint
       end
 
-      # Brings a fresh tree to where a failed run's settled steps left it: their
-      # patches applied in order, the result marked as the savepoint.
-      def replay!(patches)
-        patches.reject(&:empty?).each do |contents|
-          Tempfile.create(%w[agent .patch]) do |file|
-            file.write(contents)
-            file.flush
-            environment.upload(file.path, REMOTE_PATCH)
-          end
-
-          environment.exec!("#{git} apply --binary --whitespace=nowarn #{REMOTE_PATCH} && rm -f #{REMOTE_PATCH}", timeout:)
-        end
-
+      # Brings a fresh tree to where an earlier run left it: the settled steps'
+      # patches applied in order and marked as the savepoint, then the work of
+      # the step that run stopped in, on top of it, so collect! sees it as this step's.
+      def replay!(settled, unsettled = nil)
+        settled.each { apply!(it) }
         savepoint!
+        apply!(unsettled) if unsettled
       end
 
       # Puts the workdir back to the savepoint exactly: the verifier restored
@@ -90,6 +83,18 @@ module Lemans
       end
 
       private
+
+      def apply!(contents)
+        return if contents.empty?
+
+        Tempfile.create(%w[agent .patch]) do |file|
+          file.write(contents)
+          file.flush
+          environment.upload(file.path, REMOTE_PATCH)
+        end
+
+        environment.exec!("#{git} apply --binary --whitespace=nowarn #{REMOTE_PATCH} && rm -f #{REMOTE_PATCH}", timeout:)
+      end
 
       def save_diff(result, store, from, to, destination)
         diffed = environment.exec("#{git} diff --binary #{from} #{to} > #{REMOTE_PATCH}", timeout:)

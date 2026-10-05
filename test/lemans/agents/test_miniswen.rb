@@ -52,6 +52,24 @@ class MiniswenAdapterTest < Minitest::Test
     assert_equal "system", trajectory["steps"].first["source"]
   end
 
+  def test_the_raw_result_is_the_history_a_recovery_continues_from
+    agent, task = build_agent("ls /app")
+    profile = agent.profile.dup
+    profile.step_limit = 1
+    agent = Lemans::Agents.build("miniswen", profile:, model: "test")
+    first, = run_agent(agent, task)
+
+    assert_equal "step_limit", JSON.parse(first.raw_result)["status"]
+
+    stub_llm(SUBMIT)
+    profile.step_limit = 5
+    resumed = Lemans::Agents.build("miniswen", profile:, model: "test").run(task, FakeEnv.new, history: first.raw_result)
+
+    assert_predicate resumed.outcome, :completed?
+    assert_equal 2, resumed.usage.steps
+    assert_equal JSON.parse(first.raw_result)["messages"], JSON.parse(resumed.raw_result)["messages"].first(4)
+  end
+
   def test_a_submission_is_a_completed_scored_trial_with_priced_usage
     agent, task = build_agent({ cmd: "echo hello > /app/hello.txt", content: "I made the file." }, SUBMIT)
     response, trajectory = run_agent(agent, task)

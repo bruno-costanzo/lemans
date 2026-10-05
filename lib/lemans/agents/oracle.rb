@@ -13,7 +13,7 @@ module Lemans
       ENTRYPOINT = "solve.sh"
       PATCH = "solution.patch"
 
-      def run(task, environment)
+      def run(task, environment, history: nil)
         files = task.solution_files
         if files.empty?
           raise ConfigError, "#{task.name}: no solution/ to run — the oracle has nothing to prove" if

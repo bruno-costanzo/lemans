@@ -75,6 +75,17 @@ class MiniswenInstalledTest < Minitest::Test
     assert_equal "submitted", JSON.parse(response.raw_result)["status"]
   end
 
+  def test_a_history_ships_to_the_sandbox_in_place_of_the_prompt
+    agent, task = build_agent
+    shell = TestEnvironment.new(files: { Lemans::Agents::MiniswenInstalled::RESULTS_PATH => remote_result_json })
+
+    with_openrouter_key { agent.run(task, shell, history: remote_result_json) }
+
+    assert_equal Lemans::Agents::MiniswenInstalled::HISTORY_PATH, shell.uploads.last.last
+    assert_includes shell.commands.last, "--continue-from #{Lemans::Agents::MiniswenInstalled::HISTORY_PATH}"
+    refute_includes shell.commands.last, " -p "
+  end
+
   def test_jailed_commands_get_no_network_outside_an_allowlist
     config = load_config
     config.agent.environment.network = Lemans::Config::NetworkPolicy.new("none")

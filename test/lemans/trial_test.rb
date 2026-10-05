@@ -139,7 +139,7 @@ class TrialTest < Minitest::Test
 
   def test_a_run_that_outspends_its_price_list_still_leaves_its_patch
     agent = Lemans::Agents::Nop.new(profile: load_config.agent)
-    agent.define_singleton_method(:run) do |_task, _environment|
+    agent.define_singleton_method(:run) do |_task, _environment, **|
       raise Miniswen::AccountingError, "no published price"
     end
 
@@ -227,7 +227,7 @@ class TrialTest < Minitest::Test
       def to_atif = { steps: [] }
     end.new
     agent = Lemans::Agents::Nop.new(profile: load_config.agent)
-    agent.define_singleton_method(:run) do |_task, _environment|
+    agent.define_singleton_method(:run) do |_task, _environment, **|
       Lemans::Agent::Response.new(error: "the model went away", trajectory:, raw_result: '{"status":"error"}')
     end
 
@@ -286,6 +286,107 @@ class TrialTest < Minitest::Test
         refute_includes artifacts, "trajectory.2.json"
         refute_equal "lost\n", store.read_artifact(result, "agent.2.patch")
       end
+    end
+  end
+
+  def source_run(task, store, phases:, outcome: [ :agent_error, "the provider went away" ], steps: 0, reward: nil, artifacts: {})
+    source = Lemans::Result.from_task(task, model: task.config.models.first, agent: "oracle")
+    t0 = Time.now.utc - 3600
+    phases.each do |name, from, to|
+      source.phase_started(name, t0 + from)
+      source.phase_finished(name, t0 + to)
+    end
+    steps.times { source.step_completed!(:completed, Lemans::Result::Usage.zero, duration: 1.0) }
+    outcome.first == :completed ? source.graded!(reward) : source.failed!(*outcome)
+    store.save(source)
+    artifacts.each { |path, contents| store.save_artifact(source, contents, path:) }
+    source
+  end
+
+  def recording_agent
+    agent = Lemans::Agents::Nop.new(profile: load_config.agent)
+    agent.define_singleton_method(:histories) { @histories ||= [] }
+    agent.define_singleton_method(:run) do |_task, _environment, history: nil|
+      histories << history
+      Lemans::Agent::Response.new(outcome: Lemans::Result::Outcome.new(:completed), usage: Lemans::Result::Usage.zero)
+    end
+    agent
+  end
+
+  def test_a_recovery_continues_the_failed_step_from_its_history
+    with_multistep_task do |task|
+      Dir.mktmpdir do |dir|
+        store = Lemans::Stores::FS.new(dir)
+        source = source_run(task, store, steps: 1,
+                                         phases: [ [ :environment_setup, 0, 10 ], [ :"agent.1", 10, 100 ], [ :"verifier.1", 100, 110 ], [ :"agent.2", 110, 170 ] ],
+                                         artifacts: { "agent.1.patch" => "step one\n", "agent.2.patch" => "half of two\n",
+                                                      "agent.result.2.json" => '{"messages":[]}' })
+        agent = recording_agent
+        env = sandbox
+        result = Lemans::Trial.new(task, agent:, environment: env, store:, restart_from: source, restart_mode: :recover).run
+
+        assert_equal :completed, result.status
+        assert_equal Lemans::Result::Restart.new(trial: source.id, step: 2, mode: "recover"), result.restarted_from
+        assert_equal [ '{"messages":[]}' ], agent.histories
+
+        # Step one is settled under the savepoint; the partial step lands on top, uncommitted.
+        applies = env.commands.each_index.select { env.commands[it].include?("apply --binary --whitespace=nowarn /tmp/lemans-agent.patch") }
+        savepoint = env.commands.each_index.select { env.commands[it].include?("write-tree") }[1]
+
+        assert_equal 2, applies.size
+        assert_operator applies.first, :<, savepoint
+        assert_operator savepoint, :<, applies.last
+        refute(env.commands.any? { it.include?("checkout-index") })
+
+        # The recovered agent phase reaches back over the 60s the source spent.
+        assert_equal %i[environment_setup agent.1 verifier.1 agent.2 verifier], result.phases.map(&:name)
+        assert_operator result.phases[3].duration, :>=, 60.0
+        assert_equal result.phases.map(&:started_at).sort, result.phases.map(&:started_at)
+        assert_in_delta 0.0, result.phases[3].started_at - result.phases[2].finished_at, 0.001
+      end
+    end
+  end
+
+  def test_a_reverification_grades_the_gate_again_and_goes_on
+    with_multistep_task do |task|
+      Dir.mktmpdir do |dir|
+        store = Lemans::Stores::FS.new(dir)
+        source = source_run(task, store, steps: 1, outcome: [ :completed ], reward: 0.0,
+                                         phases: [ [ :environment_setup, 0, 10 ], [ :"agent.1", 10, 100 ], [ :"verifier.1", 100, 110 ] ],
+                                         artifacts: { "agent.1.patch" => "step one\n", "trajectory.1.json" => "{}", "checks.1.txt" => "old" })
+        agent = recording_agent
+        env = sandbox
+        result = Lemans::Trial.new(task, agent:, environment: env, store:, restart_from: source, restart_mode: :reverify).run
+
+        assert_in_delta 1.0, result.reward
+        assert_equal 2, result.steps.size
+        # Step one's agent did not run again; step two's did, from scratch.
+        assert_equal [ nil ], agent.histories
+        assert_equal %i[environment_setup agent.1 verifier.1 agent.2 verifier], result.phases.map(&:name)
+
+        # The agent's evidence came along; the grading's was produced anew.
+        assert_equal "{}", store.read_artifact(result, "trajectory.1.json")
+        assert_equal "ran", store.read_artifact(result, "checks.1.txt")
+        refute_equal "step one\n", store.read_artifact(result, "agent.1.patch")
+      end
+    end
+  end
+
+  def test_a_reverification_of_a_single_step_runs_no_agent
+    Dir.mktmpdir do |dir|
+      store = Lemans::Stores::FS.new(dir)
+      task = load_task
+      source = source_run(task, store, outcome: [ :completed ], reward: 0.0,
+                                       phases: [ [ :environment_setup, 0, 10 ], [ :agent, 10, 100 ], [ :verifier, 100, 110 ] ],
+                                       artifacts: { "agent.patch" => "the fix\n", "trajectory.json" => "{}" })
+      agent = recording_agent
+      agent.define_singleton_method(:install) { |*| raise "no agent step remains" }
+      result = Lemans::Trial.new(task, agent:, environment: sandbox, store:, restart_from: source, restart_mode: :reverify).run
+
+      assert_in_delta 1.0, result.reward
+      assert_empty agent.histories
+      assert_equal %i[environment_setup agent verifier], result.phases.map(&:name)
+      assert_equal "{}", store.read_artifact(result, "trajectory.json")
     end
   end
 end

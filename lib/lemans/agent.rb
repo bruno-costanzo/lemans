@@ -15,6 +15,9 @@ module Lemans
 
     attr_reader :profile, :model
 
+    # Whether #run can go on from the history (raw result) of an interrupted run
+    def self.recoverable? = false
+
     def initialize(profile:, model: nil)
       @profile = profile
 
@@ -28,7 +31,7 @@ module Lemans
     def install(_task, _environment) = nil
 
     # Run the task.
-    def run(task, environment)
+    def run(task, environment, history: nil)
       raise NotImplementedError
     end
 
