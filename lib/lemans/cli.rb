@@ -205,7 +205,8 @@ module Lemans
     option :format, default: "table", enum: %w[table csv], desc: "Output format"
     option :aggregate, aliases: "-A", banner: "COLUMNS", lazy_default: "task-model",
                        desc: "Group results by 1-3 dash-joined columns (task, agent, model)"
-    option :sort, aliases: "-S", banner: "COLUMN", desc: "Sort by a column"
+    option :sort, aliases: "-S", banner: "COLUMNS",
+                  desc: "Sort by dash-joined columns, e.g. score-credit (numbers high to low, names A-Z; ^column reverses)"
     def report(runs_dir = options[:runs_dir])
       store = Stores::FS.new(runs_dir)
       results = Report.load(store, tags: options[:tag], names: options[:task],

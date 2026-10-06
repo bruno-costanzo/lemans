@@ -83,21 +83,42 @@ module Lemans
           end
         end
 
-        # One sorting rule for every view: validate the column name and keep
-        # rows that never measured the value at the bottom.
-        def sort_column(name, allowed:)
-          column = name.to_s.to_sym
-          return column if allowed.include?(column)
+        # One sorting rule for every view. `score-credit` sorts by score, then
+        # credit; `^` reverses a column's natural order. Column names may hold
+        # dashes (features), so the longest known name wins.
+        def sort_columns(spec, allowed:)
+          names = allowed.map(&:to_s).sort_by { -it.length }
+          rest = spec.to_s
+          columns = []
+          loop do
+            reversed = rest.start_with?("^")
+            rest = rest.delete_prefix("^")
+            name = names.find { rest == it || rest.start_with?("#{it}-") }
+            raise ConfigError, "--sort: unknown column in #{spec.inspect} (try #{allowed.join(", ")})" unless name
 
-          raise ConfigError, "--sort: unknown column #{name.inspect} (try #{allowed.join(", ")})"
+            columns << [ name.to_sym, reversed ]
+            rest = rest.delete_prefix(name).delete_prefix("-")
+            return columns if rest.empty?
+          end
         end
 
-        def sort_rows(rows, descending: false)
-          keyed = rows.map { [ yield(it), it ] }
-          present, missing = keyed.partition { |value, _| value }
-          sorted = present.sort_by { |value, _| value }
-          sorted.reverse! if descending
-          (sorted + missing).map(&:last)
+        # Keys are [value, descending] pairs, tried in order; rows that never
+        # measured a value sink below the rest, and ties keep their order.
+        def sort_rows(rows, keys)
+          keyed = rows.each_with_index.map { |row, index| [ keys.map { |value, _| value.call(row) }, index, row ] }
+          keyed.sort { |(a, i, _), (b, j, _)| compare(a, b, keys.map(&:last)).nonzero? || i <=> j }.map(&:last)
+        end
+
+        private def compare(values, others, descending)
+          values.zip(others, descending).each do |value, other, desc|
+            next if value == other
+            return 1 if value.nil?
+            return -1 if other.nil?
+
+            order = value <=> other
+            return desc ? -order : order unless order.zero?
+          end
+          0
         end
       end
 
@@ -112,15 +133,12 @@ module Lemans
 
       # Numbers rank best-first the way a leaderboard reads; names sort A-Z.
       # Trials that never measured the column sink to the bottom either way.
-      def order_by!(column)
-        column = self.class.sort_column(column, allowed: TABLE_COLUMNS + feature_columns)
-        descending = NUMERIC_COLUMNS.include?(column) || feature_columns.include?(column)
-        @rows = self.class.sort_rows(rows, descending:) do |row|
-          if column == :progress then self.class.progress_ratio(row)
-          elsif feature_columns.include?(column) then { true => 1, false => 0 }[self.class.feature_of(row, column)]
-          else row[column]
-          end
+      def order_by!(spec)
+        keys = self.class.sort_columns(spec, allowed: TABLE_COLUMNS + feature_columns).map do |column, reversed|
+          numeric = NUMERIC_COLUMNS.include?(column) || feature_columns.include?(column)
+          [ ->(row) { sort_value(row, column) }, numeric != reversed ]
         end
+        @rows = self.class.sort_rows(rows, keys)
         self
       end
 
@@ -184,6 +202,14 @@ module Lemans
       end
 
       private
+
+      def sort_value(row, column)
+        if column == :model then short_model(row[:model])
+        elsif column == :progress then self.class.progress_ratio(row)
+        elsif feature_columns.include?(column) then { true => 1, false => 0 }[self.class.feature_of(row, column)]
+        else row[column]
+        end
+      end
 
       # Older multistep results lack the task's step count: a run of the same
       # task that solved it went through every step.

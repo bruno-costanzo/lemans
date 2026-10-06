@@ -93,5 +93,13 @@ class ReportAggregateTest < Minitest::Test
 
     assert_equal %w[a-task b-task c-task], by_task
     assert_raises(Lemans::ConfigError) { aggregate.order_by!("reward") }
+
+    by_model_then_score = Lemans::CLI::Report::Aggregate.new(
+      build_report([ { model: "x/b", task: "t1", reward: 1.0 }, { model: "y/a", task: "t2", reward: 0.0 },
+                     { model: "y/a", task: "t1", reward: 1.0 }, { model: "x/b", task: "t2", reward: 0.0, credit: 0.5 } ]),
+      keys: %i[model task]
+    ).order_by!("^model-score-credit").to_rows.drop(1).map { it.first(2) }
+
+    assert_equal [ %w[b t1], %w[b t2], %w[a t1], %w[a t2] ], by_model_then_score
   end
 end

@@ -152,6 +152,26 @@ class CLIReportTest < Minitest::Test
 
     assert_equal %w[c-task a-task b-task], tasks
     assert_raises(Lemans::ConfigError) { report.order_by!("nope") }
+    assert_raises(Lemans::ConfigError) { report.order_by!("cost_usd-nope") }
+    assert_raises(Lemans::ConfigError) { report.order_by!("") }
+  end
+
+  def test_the_flat_report_sorts_by_several_columns
+    rows = [
+      { task: "a-task", trial: "1", reward: 1.0, cost_usd: 0.01, features: { "auto-join" => true } },
+      { task: "b-task", trial: "2", reward: 1.0, cost_usd: 0.05, features: { "auto-join" => false } },
+      { task: "a-task", trial: "3", reward: 0.0, cost_usd: 0.02, features: { "auto-join" => true } },
+      { task: "b-task", trial: "4", reward: nil, cost_usd: 0.03, features: nil }
+    ]
+    report = Lemans::CLI::Report.new(rows)
+    trials = ->(spec) { report.order_by!(spec).rows.map { it[:trial] } }
+
+    assert_equal %w[2 1 3 4], trials.("reward-cost_usd")
+    assert_equal %w[1 2 3 4], trials.("reward-^cost_usd")
+    assert_equal %w[3 2 1 4], trials.("^reward-cost_usd")
+    assert_equal %w[3 1 2 4], trials.("task-^reward")
+    assert_equal %w[2 4 1 3], trials.("^task-reward")
+    assert_equal %w[1 3 2 4], trials.("feat:auto-join-^cost_usd")
   end
 
   def test_the_progress_column_appears_only_for_multistep_trials

@@ -32,18 +32,11 @@ module Lemans
                           .sort_by { |group| keys.map { group[it].to_s } }
         end
 
-        def order_by!(column)
-          column = Report.sort_column(column, allowed: keys + METRICS + report.feature_columns)
-          @groups =
-            if keys.include?(column)
-              Report.sort_rows(@groups) { it[column].to_s }
-            elsif report.feature_columns.include?(column)
-              Report.sort_rows(@groups, descending: true) { |group| group[column] && Rational(*group[column]) }
-            elsif column == :score
-              Report.sort_rows(@groups, descending: true) { [ Rational(it[:solved], it[:attempts]), it[:attempts] ] }
-            else
-              Report.sort_rows(@groups, descending: true) { it[METRIC_SOURCES.fetch(column)] }
-            end
+        def order_by!(spec)
+          sort_keys = Report.sort_columns(spec, allowed: keys + METRICS + report.feature_columns).map do |column, reversed|
+            [ ->(group) { sort_value(group, column) }, !keys.include?(column) != reversed ]
+          end
+          @groups = Report.sort_rows(@groups, sort_keys)
           self
         end
 
@@ -71,6 +64,15 @@ module Lemans
         def summary_lines = report.summary_lines
 
         private
+
+        def sort_value(group, column)
+          if column == :model then Report.short_model(group[:model])
+          elsif keys.include?(column) then group[column].to_s
+          elsif report.feature_columns.include?(column) then group[column] && Rational(*group[column])
+          elsif column == :score then [ Rational(group[:solved], group[:attempts]), group[:attempts] ]
+          else group[METRIC_SOURCES.fetch(column)]
+          end
+        end
 
         # Attempts count every run; means and the median skip runs that never
         # measured the value, so one invalid trial cannot zero out a cell.
