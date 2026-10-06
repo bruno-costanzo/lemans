@@ -33,10 +33,12 @@ module Lemans
         end
 
         def order_by!(column)
-          column = Report.sort_column(column, allowed: keys + METRICS)
+          column = Report.sort_column(column, allowed: keys + METRICS + report.feature_columns)
           @groups =
             if keys.include?(column)
               Report.sort_rows(@groups) { it[column].to_s }
+            elsif report.feature_columns.include?(column)
+              Report.sort_rows(@groups, descending: true) { |group| group[column] && Rational(*group[column]) }
             elsif column == :score
               Report.sort_rows(@groups, descending: true) { [ Rational(it[:solved], it[:attempts]), it[:attempts] ] }
             else
@@ -47,17 +49,20 @@ module Lemans
 
         def to_rows
           metrics = report.fractional? ? METRICS : METRICS - [ :credit ]
-          [ keys.map(&:to_s) + metrics.map(&:to_s) ] +
+          [ keys.map(&:to_s) + metrics.map(&:to_s) + report.feature_columns.map(&:to_s) ] +
             @groups.map do |group|
-              keys.map { |key| display_key(key, group[key]) } + metrics.map { cell(it, group) }
+              keys.map { |key| display_key(key, group[key]) } + metrics.map { cell(it, group) } +
+                report.feature_columns.map { pass_rate(group[it]) }
             end
         end
 
         def to_csv
           columns = keys + %i[solved attempts credit duration cost_usd steps tokens]
           CSV.generate do |csv|
-            csv << columns
-            @groups.each { |group| csv << columns.map { group[it] } }
+            csv << columns + report.feature_columns
+            @groups.each do |group|
+              csv << columns.map { group[it] } + report.feature_columns.map { group[it] && pass_rate(group[it]) }
+            end
           end
         end
 
@@ -77,9 +82,18 @@ module Lemans
             duration: median(group.filter_map { it[:duration] }),
             cost_usd: mean(group.filter_map { it[:cost_usd] }),
             steps: mean(group.filter_map { it[:steps] }),
-            tokens: mean(group.filter_map { it[:tokens] })
+            tokens: mean(group.filter_map { it[:tokens] }),
+            **report.feature_columns.to_h { [ it, feature_tally(group, it) ] }
           )
         end
+
+        # Passed out of the runs that graded the feature; nil when none did
+        def feature_tally(group, column)
+          graded = group.map { Report.feature_of(it, column) }.reject(&:nil?)
+          [ graded.count(true), graded.size ] unless graded.empty?
+        end
+
+        def pass_rate(tally) = tally ? tally.join("/") : "-"
 
         def cell(metric, group)
           case metric

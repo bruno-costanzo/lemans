@@ -29,6 +29,7 @@ module Lemans
             model: result.model,
             reward: result.reward,
             credit: result.credit,
+            features: result.features,
             completed_steps: result.steps&.size,
             total_steps: result.total_steps,
             outcome: result.status,
@@ -48,6 +49,11 @@ module Lemans
 
         # Steps completed out of the task's steps; unknown for older runs halted midway
         def progress_ratio(row) = row[:total_steps] && Rational(row[:completed_steps], row[:total_steps])
+
+        # Feature columns carry a prefix no regular column has
+        def feature_column(name) = :"feat:#{name}"
+
+        def feature_of(row, column) = row[:features]&.[](column.to_s.delete_prefix("feat:"))
 
         # A bench may name no model at all (nop, oracle); the summary needs a
         # label, not a nil for ljust to crash on.
@@ -107,9 +113,13 @@ module Lemans
       # Numbers rank best-first the way a leaderboard reads; names sort A-Z.
       # Trials that never measured the column sink to the bottom either way.
       def order_by!(column)
-        column = self.class.sort_column(column, allowed: TABLE_COLUMNS)
-        @rows = self.class.sort_rows(rows, descending: NUMERIC_COLUMNS.include?(column)) do |row|
-          column == :progress ? self.class.progress_ratio(row) : row[column]
+        column = self.class.sort_column(column, allowed: TABLE_COLUMNS + feature_columns)
+        descending = NUMERIC_COLUMNS.include?(column) || feature_columns.include?(column)
+        @rows = self.class.sort_rows(rows, descending:) do |row|
+          if column == :progress then self.class.progress_ratio(row)
+          elsif feature_columns.include?(column) then { true => 1, false => 0 }[self.class.feature_of(row, column)]
+          else row[column]
+          end
         end
         self
       end
@@ -122,8 +132,17 @@ module Lemans
 
       def multistep? = rows.any? { it[:completed_steps] }
 
+      # The features every task in view tracks; tasks with no graded run yet have no say.
+      def feature_columns
+        @feature_columns ||= rows.select { it[:features] }
+                                 .group_by { it[:task] }
+                                 .map { |_, group| group.flat_map { it[:features].keys }.uniq }
+                                 .reduce(:&).to_a.sort.map { self.class.feature_column(it) }
+      end
+
       def table_columns
-        TABLE_COLUMNS - [ (:credit unless fractional?), (:progress unless multistep?) ].compact
+        columns = TABLE_COLUMNS - [ (:credit unless fractional?), (:progress unless multistep?) ].compact
+        columns.insert(columns.index(:trial), *feature_columns)
       end
 
       def to_rows
@@ -133,6 +152,7 @@ module Lemans
               case column
               when :model then display(short_model(row[:model]))
               when :progress then progress(row)
+              when *feature_columns then { true => "✓", false => "✗" }.fetch(self.class.feature_of(row, column), "-")
               else display(row[column])
               end
             end
@@ -155,9 +175,10 @@ module Lemans
 
       def to_csv
         CSV.generate do |csv|
-          csv << COLUMNS
+          csv << COLUMNS + feature_columns
           rows.each do |row|
-            csv << COLUMNS.map { |column| column == :tags ? Array(row[:tags]).join(" ") : row[column] }
+            csv << COLUMNS.map { |column| column == :tags ? Array(row[:tags]).join(" ") : row[column] } +
+                   feature_columns.map { self.class.feature_of(row, it) }
           end
         end
       end
@@ -165,9 +186,12 @@ module Lemans
       private
 
       # Older multistep results lack the task's step count: a run of the same
-      # task that reached its final verification tells it.
+      # task that solved it went through every step.
       def with_total_steps(rows)
-        known = rows.select { it[:total_steps] }.to_h { [ it[:task], it[:total_steps] ] }
+        known = rows.filter_map do |row|
+          total = row[:total_steps] || (row[:completed_steps] if row[:reward].to_f >= 1.0)
+          [ row[:task], total ] if total
+        end.to_h
         rows.map do |row|
           next row if row[:total_steps] || !row[:completed_steps] || !known[row[:task]]
 

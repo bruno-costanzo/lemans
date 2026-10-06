@@ -15,6 +15,7 @@ class CLIRegradeTest < Minitest::Test
     class GradedTest < Minitest::Test
       def test_required = assert true
 
+      # @feature niceties
       test "nice to have" do
         allow_failure(points: 2) { assert true }
       end
@@ -43,7 +44,7 @@ class CLIRegradeTest < Minitest::Test
           Lemans::CLI.start(%W[regrade --bench #{bench} --task graded --runs-dir #{runs}])
         end
 
-        assert_includes out, "graded__aaaaaaa  reward 0.0 -> 1.0  credit 0.0 -> 0.6"
+        assert_includes out, "graded__aaaaaaa  reward 0.0 -> 1.0  credit 0.0 -> 0.6  features niceties - -> ✗"
         assert_includes out, "graded: 1 re-graded, 0 skipped"
       assert_includes out, "1 trials: 1 scored, 0 invalid, 1 solved (100%)"
 
@@ -51,6 +52,7 @@ class CLIRegradeTest < Minitest::Test
 
         assert_in_delta 1.0, regraded.reward
         assert_in_delta 0.6, regraded.credit
+        assert_equal({ "niceties" => false }, regraded.features)
 
         checks = JSON.parse(store.read_artifact(regraded, "checks.json"))
 
@@ -64,6 +66,25 @@ class CLIRegradeTest < Minitest::Test
         assert_includes again, "graded__aaaaaaa  unchanged"
         assert_includes again, "graded: 0 re-graded, 1 skipped"
       end
+    end
+  end
+
+  def test_total_steps_are_recorded_on_multistep_runs
+    Dir.mktmpdir do |runs|
+      store = Lemans::Stores::FS.new(runs)
+      halted = Lemans::Result.new(task: "ms", agent: "miniswen", model: "m/model-a", id: "ms__aaaaaaa")
+      2.times { halted.step_completed!(:completed, Lemans::Result::Usage.zero) }
+      halted.failed!(:agent_error, "gone")
+      known = Lemans::Result.new(task: "ms", agent: "miniswen", model: "m/model-a", id: "ms__bbbbbbb")
+      known.step_completed!(:completed, Lemans::Result::Usage.zero)
+      known.total_steps = 3
+      [ halted, known ].each { store.save(it) }
+      regrade = Lemans::CLI::Regrade.new(store, "ms", mapping: Lemans::CLI::Regrade::Mapping.new(checks: {}, points: {}))
+
+      assert_equal %w[ms__aaaaaaa], regrade.record_total_steps!(3).map(&:id)
+
+      assert_equal [ 3, 3 ], store.query(task: "ms").map(&:total_steps)
+      assert_empty regrade.record_total_steps!(3)
     end
   end
 end

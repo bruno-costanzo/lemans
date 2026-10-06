@@ -9,9 +9,9 @@ class ReportAggregateTest < Minitest::Test
   end
 
   def row(task: "hello-world", agent: "miniswen", model: "openrouter/openai/gpt-5.6-luna",
-          reward: 1.0, credit: reward, scored: true, cost_usd: 0.01, steps: 4, tokens: 1000, duration: 60.0)
+          reward: 1.0, credit: reward, scored: true, cost_usd: 0.01, steps: 4, tokens: 1000, duration: 60.0, features: nil)
     {
-      task:, agent:, model:, reward:, credit:, outcome: scored ? :completed : :environment_error,
+      task:, agent:, model:, reward:, credit:, features:, outcome: scored ? :completed : :environment_error,
       scored:, cost_usd:, steps:, tokens:, duration:,
       started_at: "2026-08-11T10:00:00Z", trial: "#{task}__#{rand(1000)}"
     }
@@ -25,6 +25,22 @@ class ReportAggregateTest < Minitest::Test
     [ "task-reward", "", "task-task", "task-agent-model-task" ].each do |spec|
       assert_raises(Lemans::ConfigError) { Lemans::CLI::Report::Aggregate.keys(spec) }
     end
+  end
+
+  def test_feature_columns_quote_passed_over_graded
+    report = build_report([
+                            { features: { "migrations" => true } },
+                            { features: { "migrations" => false } },
+                            { features: { "migrations" => true } },
+                            { features: nil, reward: 0.0 },
+                            { model: "x/other", features: nil }
+                          ])
+    aggregate = Lemans::CLI::Report::Aggregate.new(report, keys: %i[model]).order_by!("feat:migrations")
+    rows = aggregate.to_rows
+
+    assert_equal "feat:migrations", rows.first.last
+    assert_equal [ [ "gpt-5.6-luna", "2/3" ], [ "other", "-" ] ], rows.drop(1).map { [ it.first, it.last ] }
+    assert_equal "2/3", CSV.parse(aggregate.to_csv, headers: true).first["feat:migrations"]
   end
 
   def test_a_group_quotes_solved_over_attempts_median_time_and_mean_spend

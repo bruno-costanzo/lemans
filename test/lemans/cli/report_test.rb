@@ -174,8 +174,36 @@ class CLIReportTest < Minitest::Test
       other = Lemans::CLI::Report.new([ { task: "ms-other", trial: "ms-other__a", completed_steps: 1 } ])
 
       assert_nil other.rows.first[:total_steps]
+
+      solved = Lemans::CLI::Report.new([ { task: "ms-other", trial: "ms-other__a", completed_steps: 1 },
+                                         { task: "ms-other", trial: "ms-other__b", completed_steps: 4, reward: 1.0 } ])
+
+      assert_equal [ 4, 4 ], solved.rows.map { it[:total_steps] }
       assert_includes report.to_csv.lines.first, "completed_steps,total_steps"
     end
+  end
+
+  def test_feature_columns_show_the_features_every_task_tracks
+    rows = [
+      { task: "a-task", trial: "a-task__a", features: { "migrations" => true, "archspec" => false } },
+      { task: "a-task", trial: "a-task__b", features: { "migrations" => false, "archspec" => true } },
+      { task: "a-task", trial: "a-task__c", features: nil },
+      { task: "b-task", trial: "b-task__a", features: { "migrations" => true, "ssrf" => true } },
+      { task: "c-task", trial: "c-task__a", features: nil }
+    ]
+    report = Lemans::CLI::Report.new(rows).order_by!("feat:migrations")
+    table = report.to_rows
+    column = table.first.index("feat:migrations")
+
+    assert_equal %w[feat:migrations trial], table.first.last(2)
+    assert_equal %w[✓ ✓ ✗ - -], table.drop(1).map { it[column] }
+    assert_equal %i[feat:archspec feat:migrations], Lemans::CLI::Report.new(rows.first(3)).feature_columns
+    assert_empty Lemans::CLI::Report.new(rows.last(1)).feature_columns
+
+    csv = CSV.parse(report.to_csv, headers: true)
+
+    assert_equal %w[true true false] + [ nil, nil ], csv.map { it["feat:migrations"] }
+    assert_raises(Lemans::ConfigError) { report.order_by!("feat:ssrf") }
   end
 
   def test_an_empty_store_is_empty

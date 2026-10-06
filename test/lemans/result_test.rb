@@ -195,13 +195,19 @@ class ResultTest < Minitest::Test
     restored = Lemans::Result.from_json(JSON.parse(JSON.generate(halted.as_json), symbolize_names: true))
 
     assert_equal 5, restored.total_steps
+  end
 
-    # Older files lack the count; the final grading still tells it
-    graded = failed_multistep_result
-    graded.phase_started(:verifier)
-    graded.phase_finished(:verifier)
+  def test_features
+    result = build_result.completed!(:completed, Lemans::Result::Usage.zero)
+    result.graded!(1.0, features: { "migrations" => true, "archspec" => false })
+    restored = Lemans::Result.from_json(JSON.parse(JSON.generate(result.as_json), symbolize_names: true))
 
-    assert_equal 3, graded.total_steps
+    assert_equal({ "migrations" => true, "archspec" => false }, restored.features)
+
+    restored.failed!(:verifier_error, "the tests crashed")
+
+    assert_nil restored.features
+    assert_nil Lemans::Result.from_json(JSON.parse(JSON.generate(build_result.as_json), symbolize_names: true)).features
   end
 
   def test_restart_modes

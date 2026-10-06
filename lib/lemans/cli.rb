@@ -175,12 +175,18 @@ module Lemans
       tasks.each do |task|
         mapping = options[:mapping] ? Regrade.mapping_from_file(options[:mapping]) : Regrade.mapping_for(task)
         regrade = Regrade.new(store, task.name, mapping:)
+        mapping.stray_features.to_a.each { say_status :warning, "#{it}: @feature comment outside any test", :yellow }
         regrade.verify_mapping! unless options[:mapping]
 
         changes, skipped = regrade.execute!
         changes.each { say_status :regraded, "#{it.result.id}  #{grade_change(it)}", :green }
         skipped.each { |result, reason| say_status :skipped, "#{result.id}  #{reason}", :yellow }
         say "#{task.name}: #{changes.size} re-graded, #{skipped.size} skipped"
+
+        next unless task.multistep?
+
+        counted = regrade.record_total_steps!(task.steps)
+        say "#{task.name}: #{counted.size} run(s) gained total_steps: #{task.steps}" if counted.any?
       end
 
       say ""
@@ -253,8 +259,18 @@ module Lemans
     end
 
     def grade_change(change)
-      %i[reward credit].map { |grade| "#{grade} #{change[grade].map(&:inspect).join(" -> ")}" }.join("  ")
+      grades = %i[reward credit].map { |grade| "#{grade} #{change[grade].map(&:inspect).join(" -> ")}" }
+      before, after = change.features
+      return grades.join("  ") if before == after
+
+      features = (before.to_h.keys | after.to_h.keys).sort.filter_map do |name|
+        was, now = [ before, after ].map { feature_mark(it&.fetch(name, nil)) }
+        "#{name} #{was} -> #{now}" if was != now
+      end
+      [ *grades, "features #{features.join(", ")}" ].join("  ")
     end
+
+    def feature_mark(passed) = { true => "✓", false => "✗" }.fetch(passed, "-")
 
     def print_report(report)
       print_table report.to_rows

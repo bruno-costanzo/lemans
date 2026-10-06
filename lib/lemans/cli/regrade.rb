@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "json"
-require "prism"
 
 module Lemans
   class CLI < Thor
@@ -12,13 +11,19 @@ module Lemans
       ALLOWED = "fail (allowed)"
       CHECKS = "checks.json"
 
-      Mapping = Struct.new(:checks, :base_credit, :points, keyword_init: true) do
+      # A checks.json-shaped file: `checks`, `grading`, and the features as
+      # `features: { name => [checks] }`.
+      Mapping = Struct.new(:checks, :base_credit, :points, :features, :stray_features, keyword_init: true) do
         def self.from_json(data)
           checks = data["checks"] or raise ConfigError, "a mapping needs a `checks` section"
           grading = data["grading"] || {}
           declared = grading["points"] || {}
           allowed = checks.select { |_, status| status == ALLOWED }.keys
-          new(checks:, base_credit: grading["base_credit"], points: allowed.to_h { [ it, declared.fetch(it, 1) ] })
+          features = data["features"] || {}
+          unknown = features.values.flatten - checks.keys
+          raise ConfigError, "the mapping's features name unknown checks: #{unknown.inspect}" if unknown.any?
+
+          new(checks:, base_credit: grading["base_credit"], points: allowed.to_h { [ it, declared.fetch(it, 1) ] }, features:)
         end
 
         def names = checks.keys.sort
@@ -28,82 +33,18 @@ module Lemans
         def grading = { base_credit:, points: }.compact
       end
 
-      Change = Struct.new(:result, :reward, :credit, keyword_init: true)
-
-      # Reads the grading schema off the test file without running it: every
-      # `def test_*` and ActiveSupport `test "..."` is a check, an
-      # `allow_failure` call inside makes it an extra worth its `points:`.
-      class TestScanner < Prism::Visitor
-        attr_reader :tests, :points, :base_credit
-
-        def initialize
-          super
-          @scope = []
-          @tests = []
-          @points = {}
-          @current = nil
-        end
-
-        def visit_module_node(node) = scoped(node) { super }
-
-        def visit_class_node(node) = scoped(node) { super }
-
-        def visit_def_node(node)
-          return super unless node.name.start_with?("test_")
-
-          within("#{@scope.join("::")}##{node.name}") { super }
-        end
-
-        def visit_call_node(node)
-          case node.name
-          when :test
-            title = node.arguments&.arguments&.first
-            if node.receiver.nil? && node.block && title.is_a?(Prism::StringNode)
-              return within("#{@scope.join("::")}#test_#{title.unescaped.gsub(/\s+/, "_")}") { super }
-            end
-          when :allow_failure
-            @points[@current] ||= points_of(node) if @current
-          when :base_credit=
-            @base_credit = node.arguments.arguments.first.value if node.receiver.is_a?(Prism::ConstantReadNode) && node.receiver.name == :LemansReport
-          end
-          super
-        end
-
-        private
-
-        def scoped(node)
-          @scope.push(node.constant_path.full_name)
-          yield
-        ensure
-          @scope.pop
-        end
-
-        def within(check)
-          @tests << check
-          @current = check
-          yield
-        ensure
-          @current = nil
-        end
-
-        def points_of(node)
-          keywords = node.arguments&.arguments&.grep(Prism::KeywordHashNode)&.first
-          pair = keywords&.elements&.find { it.is_a?(Prism::AssocNode) && it.key.is_a?(Prism::SymbolNode) && it.key.unescaped == "points" }
-          pair ? pair.value.value : 1
-        end
-      end
+      Change = Struct.new(:result, :reward, :credit, :features, keyword_init: true)
 
       class << self
         def mapping_from_file(path) = Mapping.from_json(JSON.parse(File.read(path)))
 
         def mapping_for(task)
-          local, = task.test_files.find { |_, remote| remote == "verification_test.rb" }
-          raise ConfigError, "#{task.name} has no verification_test.rb to read the grading from" unless local
+          scanner = Trial::Verifier::TestScanner.for(task)
+          raise ConfigError, "#{task.name} has no verification_test.rb to read the grading from" unless scanner
 
-          scanner = TestScanner.new
-          Prism.parse_file(local.to_s).value.accept(scanner)
           checks = scanner.tests.to_h { [ it, scanner.points.key?(it) ? ALLOWED : "fail" ] }
-          Mapping.new(checks:, base_credit: scanner.base_credit, points: scanner.points)
+          Mapping.new(checks:, base_credit: scanner.base_credit, points: scanner.points,
+                      features: scanner.features, stray_features: scanner.stray_features)
         end
       end
 
@@ -115,8 +56,14 @@ module Lemans
         @mapping = mapping
       end
 
-      def results
-        @results ||= store.query(task:).select(&:scored?).sort_by { it.id.to_s }
+      def results = runs.select(&:scored?)
+
+      # Older multistep results lack the task's step count; returns the runs that gained it.
+      def record_total_steps!(total)
+        runs.select { it.steps && it.total_steps != total }.each do |result|
+          result.total_steps = total
+          store.save(result)
+        end
       end
 
       # A statically read mapping is only trusted once a stored checks.json
@@ -149,6 +96,8 @@ module Lemans
 
       private
 
+      def runs = @runs ||= store.query(task:).sort_by { it.id.to_s }
+
       def checks_of(result)
         raw = store.read_artifact(result, CHECKS)
         raw && JSON.parse(raw)
@@ -164,11 +113,14 @@ module Lemans
         updated[:grading] = mapping.grading unless mapping.grading.empty?
         reward = failures.empty? ? 1.0 : 0.0
         credit = credit_of(statuses, reward)
-        return if reward == result.reward && credit == result.credit && JSON.parse(JSON.generate(updated)) == checks
+        features = Trial::Verifier.features_from(statuses, mapping.features)
+        return if reward == result.reward && credit == result.credit && features == result.features &&
+                  JSON.parse(JSON.generate(updated)) == checks
 
         store.save_artifact(result, "#{JSON.pretty_generate(updated)}\n", path: CHECKS, force: true)
-        change = Change.new(result:, reward: [ result.reward, reward ], credit: [ result.credit, credit ])
-        store.save(result.graded!(reward, credit:))
+        change = Change.new(result:, reward: [ result.reward, reward ], credit: [ result.credit, credit ],
+                            features: [ result.features, features ])
+        store.save(result.graded!(reward, credit:, features:))
         change
       end
 

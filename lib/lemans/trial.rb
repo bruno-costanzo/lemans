@@ -139,7 +139,7 @@ module Lemans
             store&.save_artifact(result, verification.logs, path: with_step_index("verifier.log"))
 
             if step_task.final_step?
-              result.graded!(verification.reward, credit: verification.credit)
+              result.graded!(verification.reward, credit: verification.credit, features: verification.features)
             elsif verification.reward.zero?
               result.graded!(0.0)
               throw :halt

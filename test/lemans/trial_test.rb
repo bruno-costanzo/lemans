@@ -101,6 +101,37 @@ class TrialTest < Minitest::Test
 
     assert_in_delta 1.0, result.reward
     assert_in_delta 0.8, result.credit
+    assert_nil result.features
+  end
+
+  def test_the_features_annotated_in_the_tests_land_on_the_result
+    with_task_dir("featured") do |dir|
+      dir.join("verification_test.rb").write(<<~RUBY)
+        class T < Minitest::Test
+          # @feature webhooks
+          def test_extra = allow_failure { assert false }
+
+          # @feature webhooks
+          def test_more = assert(true)
+
+          # @feature archspec
+          def test_bonus = assert(true)
+
+          # @feature unreported
+          def test_skipped_by_the_run = assert(true)
+        end
+      RUBY
+      env = TestEnvironment.new(on_command: lambda { |files|
+        files["/logs/verifier/reward.txt"] = "1"
+        files["/logs/verifier/checks.json"] = JSON.generate(
+          checks: { "T#test_extra" => "fail (allowed)", "T#test_more" => "pass", "T#test_bonus" => "pass" }
+        )
+      })
+      task = Lemans::TaskDefinition.load_from_directory(load_config, dir)
+      result = Lemans::Trial.new(task, agent: "nop", environment: env).run
+
+      assert_equal({ "archspec" => true, "webhooks" => false }, result.features)
+    end
   end
 
   def test_a_nop_trial_is_scored_zero_rather_than_invalid

@@ -10,7 +10,7 @@ module Lemans
     # Verifies a trial in the sandbox the agent worked in, after Trial has closed
     # its network. The tests are uploaded fresh at verification time, never before.
     class Verifier
-      Verification = Data.define(:reward, :credit, :logs)
+      Verification = Data.define(:reward, :credit, :features, :logs)
 
       REWARD_RANGE = (0.0..1.0)
 
@@ -21,6 +21,13 @@ module Lemans
       ASSETS = Pathname(File.expand_path("verifier/assets", __dir__))
 
       VERIFY_BIN = "verify"
+
+      # A feature passes when all its checks passed; one with a check the run
+      # never reported is left out.
+      def self.features_from(statuses, features)
+        graded = features.to_h.select { |_, checks| checks.all? { statuses.key?(it) } }
+        graded.transform_values { |checks| checks.all? { statuses[it] == "pass" } }.sort.to_h unless graded.empty?
+      end
 
       private attr_reader :task, :environment, :snapshot, :timeout
 
@@ -94,7 +101,9 @@ module Lemans
         result = environment.exec(command, timeout:, env:)
 
         reward = read_reward(result)
-        Verification.new(reward:, credit: read_credit(reward), logs: result.output.to_s)
+        checks = read_checks
+        features = (self.class.features_from(checks.fetch("checks", {}), TestScanner.for(task)&.features) if checks && task.final_step?)
+        Verification.new(reward:, credit: credit_from(checks, reward), features:, logs: result.output.to_s)
       end
 
       def verifier_script
@@ -120,20 +129,20 @@ module Lemans
         value
       end
 
-      def read_credit(reward)
+      def read_checks
         path = File.join(task.verifier.logs_dir, "checks.json")
-        return reward unless environment.exec("test -e #{Shellwords.escape(path)}").success?
+        return nil unless environment.exec("test -e #{Shellwords.escape(path)}").success?
 
         result = environment.exec("cat #{Shellwords.escape(path)}")
         raise VerifierError, "could not read #{path}: #{result.output.to_s[0, 500]}" unless result.success?
 
-        checks = begin
-          JSON.parse(result.output.to_s)
-        rescue JSON::ParserError => e
-          raise VerifierError, "#{path} is not JSON: #{e.message[0, 500]}"
-        end
+        JSON.parse(result.output.to_s)
+      rescue JSON::ParserError => e
+        raise VerifierError, "#{path} is not JSON: #{e.message[0, 500]}"
+      end
 
-        grading = checks["grading"]
+      def credit_from(checks, reward)
+        grading = checks&.dig("grading")
         return reward unless grading && (base_credit = grading["base_credit"])
         return 0.0 if reward.zero?
 

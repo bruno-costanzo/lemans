@@ -355,6 +355,7 @@ module LemansViewer # :nodoc: all
         return m > 0 ? `${m}m ${s}s` : `${s}s`;
       },
       time(iso) { return iso ? new Date(iso).toLocaleString() : "-"; },
+      feature(value) { return value === true ? "✓" : value === false ? "✗" : "-"; },
       progress(row) { return row.completed_steps === null || row.completed_steps === undefined ? "-" : `${row.completed_steps}/${row.total_steps ?? "?"}`; },
       chars(n) { return `${n.toLocaleString("en-US")} chars`; }
     };
@@ -394,8 +395,29 @@ module LemansViewer # :nodoc: all
       return `${rows.length} trials: ${scored} scored, ${rows.length - scored} invalid, ${solved} solved${rank} · $${cost.toFixed(4)}`;
     }
 
+    const featureOf = (row, column) => row.features ? row.features[column.slice("feat:".length)] : undefined;
+
+    function sortSpec(key) {
+      if (SORTS[key]) return SORTS[key];
+      if (key && key.startsWith("feat:")) return { label: key, key: r => { const v = featureOf(r, key); return v === undefined ? null : Number(v); }, numeric: true };
+      return SORTS.time;
+    }
+
+    // The features every task in view tracks; tasks with no graded run have no say
+    function featureColumns(rows) {
+      const perTask = new Map();
+      rows.filter(r => r.features).forEach(r => {
+        const names = perTask.get(r.task) || new Set();
+        Object.keys(r.features).forEach(n => names.add(n));
+        perTask.set(r.task, names);
+      });
+      const sets = [...perTask.values()];
+      if (!sets.length) return [];
+      return [...sets[0]].filter(n => sets.every(set => set.has(n))).sort().map(n => `feat:${n}`);
+    }
+
     function sortRows(rows) {
-      const spec = SORTS[state.filters.sort] || SORTS.time;
+      const spec = sortSpec(state.filters.sort);
       const desc = state.filters.dir === "desc";
       const present = rows.filter(r => spec.key(r) !== null && spec.key(r) !== undefined);
       const missing = rows.filter(r => spec.key(r) === null || spec.key(r) === undefined);
@@ -446,7 +468,8 @@ module LemansViewer # :nodoc: all
             outcomes.map(o => el("option", { value: o }, o))),
           el("span", { class: "muted" }, "sort by"),
           controls.sort = el("select", { onchange: e => setFilter("sort", e.target.value) },
-            Object.entries(SORTS).map(([k, s]) => el("option", { value: k }, s.label))),
+            Object.entries(SORTS).map(([k, s]) => el("option", { value: k }, s.label)),
+            featureColumns(data.rows).map(f => el("option", { value: f }, f))),
           controls.dir = el("button", { onclick: () => setFilter("dir", state.filters.dir === "desc" ? "asc" : "desc"), title: "direction" }),
           el("button", { onclick: () => { Object.assign(state.filters, { q: "", model: "", agent: "", outcome: "" }); saveFilters(); state.redraw(); } }, "clear"),
           el("button", { onclick: () => loadRuns(true).then(render), title: "re-read the runs directory" }, "↻ refresh"));
@@ -466,12 +489,14 @@ module LemansViewer # :nodoc: all
     function runsTable(rows, fractional) {
       if (!rows.length) return el("div", { class: "empty" }, "no runs match");
       const multistep = rows.some(r => r.completed_steps !== null && r.completed_steps !== undefined);
+      const features = featureColumns(rows);
       const columns = [
         ["", null], ["task", "task"], ["agent", null], ["model", "model"], ["reward", "score"],
         fractional && ["credit", "credit"], multistep && ["progress", "progress"], ["outcome", null], ["cost", "cost"], ["steps", "steps"],
-        ["tokens", "tokens"], ["duration", "duration"], ["started", "time"], ["trial", null]
+        ["tokens", "tokens"], ["duration", "duration"], ["started", "time"],
+        ...features.map(f => [f, f]), ["trial", null]
       ].filter(Boolean);
-      const numeric = new Set(["reward", "credit", "progress", "cost", "steps", "tokens", "duration"]);
+      const numeric = new Set(["reward", "credit", "progress", "cost", "steps", "tokens", "duration", ...features]);
       const header = el("tr", {}, columns.map(([label, sort]) =>
         el("th", { class: [sort && "sortable", sort === state.filters.sort && "sorted", numeric.has(label) && "num"].filter(Boolean).join(" "),
                    onclick: sort && (() => setFilter("sort", sort, sort === state.filters.sort)) },
@@ -490,6 +515,7 @@ module LemansViewer # :nodoc: all
         el("td", { class: "num" }, fmt.int(r.tokens)),
         el("td", { class: "num" }, fmt.duration(r.duration)),
         el("td", {}, fmt.time(r.started_at)),
+        features.map(f => el("td", { class: "num" }, fmt.feature(featureOf(r, f)))),
         el("td", { class: "mono" }, r.trial)));
       return el("div", { class: "scroll" }, el("table", {}, el("thead", {}, header), el("tbody", {}, body)));
     }
@@ -507,7 +533,7 @@ module LemansViewer # :nodoc: all
 
     function setFilter(key, value, flipDirection = false) {
       if (flipDirection) state.filters.dir = state.filters.dir === "desc" ? "asc" : "desc";
-      else if (key === "sort") state.filters.dir = SORTS[value].numeric ? "desc" : "asc";
+      else if (key === "sort") state.filters.dir = sortSpec(value).numeric ? "desc" : "asc";
       state.filters[key] = value;
       saveFilters();
       state.redraw();
@@ -542,6 +568,7 @@ module LemansViewer # :nodoc: all
           fact("reward", fmt.num(row.reward)),
           row.credit !== row.reward && fact("credit", fmt.num(row.credit)),
           row.completed_steps !== null && row.completed_steps !== undefined && fact("progress", fmt.progress(row)),
+          ...Object.entries(row.features || {}).map(([name, passed]) => fact(`feat:${name}`, fmt.feature(passed))),
           fact("cost", fmt.cost(row.cost_usd)),
           fact("steps", fmt.int(row.steps)),
           fact("tokens", `${fmt.int(usage.input_tokens)} in · ${fmt.int(usage.output_tokens)} out · ${fmt.int(usage.cached_tokens)} cached`),

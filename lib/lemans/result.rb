@@ -156,14 +156,12 @@ module Lemans
     attr_reader :id, :task, :agent, :model, :index,
                 :profile_digest, :task_digest, :revision
 
-    attr_accessor :tags, :metadata, :restarted_from
-
-    attr_writer :total_steps
+    attr_accessor :tags, :metadata, :restarted_from, :total_steps
 
     attr_reader :phases, :steps
 
     # outcome-related attributes (we use setter-like methods, not accessors)
-    attr_reader :reward, :credit, :outcome, :usage
+    attr_reader :reward, :credit, :features, :outcome, :usage
 
     def initialize(task:, agent:, model:, id: nil, index: nil,
                    profile_digest: nil, task_digest: nil, revision: nil)
@@ -232,9 +230,10 @@ module Lemans
       completed!(outcome, aggregate_usage)
     end
 
-    def graded!(reward, credit: reward)
+    def graded!(reward, credit: reward, features: nil)
       @reward = reward
       @credit = credit
+      @features = features
       self
     end
 
@@ -246,6 +245,7 @@ module Lemans
       @outcome = Outcome.new(reason, detail)
       @reward = nil
       @credit = nil
+      @features = nil
       self
     end
 
@@ -254,9 +254,6 @@ module Lemans
       names = phases.map(&:name)
       (1..steps.to_a.size).count { names.include?(:"agent.#{it + 1}") }
     end
-
-    # Older multistep files lack the count; a run graded on its final step still tells it.
-    def total_steps = @total_steps || (steps.size if steps && final_graded?)
 
     # The step whose verification ran last, nil when none did
     def verified_step
@@ -296,9 +293,6 @@ module Lemans
 
     private def aggregate_usage = steps.filter_map(&:usage).reduce(:+)
 
-    # The final verification is the one phase without a step index
-    private def final_graded? = phases.any? { it.name == :verifier }
-
     def as_json(**)
       {
         trial: id, task:, agent:, model:, index:,
@@ -307,7 +301,7 @@ module Lemans
         lemans_version: VERSION,
         tags:, metadata:, phases: phases.map(&:as_json),
         steps: steps&.map(&:as_json), total_steps:,
-        reward:, credit:, outcome: outcome.as_json, usage: usage&.as_json, duration:,
+        reward:, credit:, features:, outcome: outcome.as_json, usage: usage&.as_json, duration:,
         started_at: started_at&.iso8601,
         finished_at: finished_at&.iso8601
       }.compact
@@ -342,7 +336,10 @@ module Lemans
           )
         end
 
-        result.graded!(data[:reward], credit: data[:credit] || data[:reward]) unless data[:reward].nil?
+        unless data[:reward].nil?
+          result.graded!(data[:reward], credit: data[:credit] || data[:reward],
+                                        features: data[:features]&.transform_keys(&:to_s))
+        end
         result
       end
 
