@@ -185,6 +185,25 @@ class ResultTest < Minitest::Test
     assert_nil Lemans::Result.from_json(JSON.parse(JSON.generate(source.as_json), symbolize_names: true)).restarted_from
   end
 
+  def test_total_steps
+    halted = failed_multistep_result
+
+    assert_nil build_result.total_steps
+    assert_nil halted.total_steps
+
+    halted.total_steps = 5
+    restored = Lemans::Result.from_json(JSON.parse(JSON.generate(halted.as_json), symbolize_names: true))
+
+    assert_equal 5, restored.total_steps
+
+    # Older files lack the count; the final grading still tells it
+    graded = failed_multistep_result
+    graded.phase_started(:verifier)
+    graded.phase_finished(:verifier)
+
+    assert_equal 3, graded.total_steps
+  end
+
   def test_restart_modes
     source = failed_multistep_result
     now = Time.utc(2026, 10, 6, 12, 0, 0)

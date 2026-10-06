@@ -154,6 +154,30 @@ class CLIReportTest < Minitest::Test
     assert_raises(Lemans::ConfigError) { report.order_by!("nope") }
   end
 
+  def test_the_progress_column_appears_only_for_multistep_trials
+    with_store do |store|
+      report = Lemans::CLI::Report.load(store)
+
+      refute_includes report.to_rows.first, "progress"
+
+      rows = report.rows + [
+        { task: "ms-task", trial: "ms-task__a", completed_steps: 2, total_steps: 5 },
+        { task: "ms-task", trial: "ms-task__b", completed_steps: 5, total_steps: 5 },
+        { task: "ms-task", trial: "ms-task__c", completed_steps: 1, total_steps: nil }
+      ]
+      report = Lemans::CLI::Report.new(rows).order_by!("progress")
+      table = report.to_rows
+      column = table.first.index("progress")
+
+      assert_equal %w[5/5 2/5 1/5 - - -], table.drop(1).map { it[column] }
+
+      other = Lemans::CLI::Report.new([ { task: "ms-other", trial: "ms-other__a", completed_steps: 1 } ])
+
+      assert_nil other.rows.first[:total_steps]
+      assert_includes report.to_csv.lines.first, "completed_steps,total_steps"
+    end
+  end
+
   def test_an_empty_store_is_empty
     Dir.mktmpdir do |runs_dir|
       assert_predicate Lemans::CLI::Report.load(Lemans::Stores::FS.new(runs_dir)), :empty?

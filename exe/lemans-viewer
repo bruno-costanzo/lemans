@@ -14,7 +14,8 @@
 #
 #   The home page lists every run the way `lemans report` does, with a task
 #   search, model/agent/outcome filters, and sorting by time, tokens, cost,
-#   score, or credit. A run's page shows its result, artifacts (patch,
+#   score, credit, or progress (multistep runs: steps completed out of the
+#   task's steps, "2/5"). A run's page shows its result, artifacts (patch,
 #   verifier log, checks), and the trajectory as a chat: markdown messages,
 #   each bash call with its output as a terminal block, reasoning behind a
 #   toggle, and a search over turns (message, reasoning, commands, outputs).
@@ -66,7 +67,7 @@ module LemansViewer # :nodoc: all
     private
 
     def runs
-      report = Lemans::CLI::Report.new(store.fetch.map { row_from(it) }, unreadable: store.unreadable.size)
+      report = self.report
       {
         rows: report.rows,
         summary: report.summary,
@@ -81,7 +82,8 @@ module LemansViewer # :nodoc: all
       return respond(404, "text/plain", "no run #{id}") unless result
 
       artifacts = [ RESULT_TAB, *store.artifacts(result) ].sort
-      json(result: result.as_json, row: row_from(result), artifacts:, trajectories: trajectories(result, artifacts))
+      row = report.rows.find { it[:trial] == id }
+      json(result: result.as_json, row:, artifacts:, trajectories: trajectories(result, artifacts))
     end
 
     def artifact(id, path)
@@ -95,6 +97,8 @@ module LemansViewer # :nodoc: all
     end
 
     def find(id) = store.fetch.find { it.id == id }
+
+    def report = Lemans::CLI::Report.new(store.fetch.map { row_from(it) }, unreadable: store.unreadable.size)
 
     def row_from(result) = Lemans::CLI::Report.row_from(result).merge(metadata: result.metadata)
 
@@ -283,6 +287,7 @@ module LemansViewer # :nodoc: all
       cost: { label: "cost", key: r => r.cost_usd, numeric: true },
       score: { label: "score", key: r => r.reward, numeric: true },
       credit: { label: "credit", key: r => r.credit, numeric: true },
+      progress: { label: "progress", key: r => r.total_steps ? r.completed_steps / r.total_steps : null, numeric: true },
       steps: { label: "steps", key: r => r.steps, numeric: true },
       task: { label: "task", key: r => r.task, numeric: false },
       model: { label: "model", key: r => shortModel(r.model), numeric: false }
@@ -350,6 +355,7 @@ module LemansViewer # :nodoc: all
         return m > 0 ? `${m}m ${s}s` : `${s}s`;
       },
       time(iso) { return iso ? new Date(iso).toLocaleString() : "-"; },
+      progress(row) { return row.completed_steps === null || row.completed_steps === undefined ? "-" : `${row.completed_steps}/${row.total_steps ?? "?"}`; },
       chars(n) { return `${n.toLocaleString("en-US")} chars`; }
     };
 
@@ -459,12 +465,13 @@ module LemansViewer # :nodoc: all
 
     function runsTable(rows, fractional) {
       if (!rows.length) return el("div", { class: "empty" }, "no runs match");
+      const multistep = rows.some(r => r.completed_steps !== null && r.completed_steps !== undefined);
       const columns = [
         ["", null], ["task", "task"], ["agent", null], ["model", "model"], ["reward", "score"],
-        fractional && ["credit", "credit"], ["outcome", null], ["cost", "cost"], ["steps", "steps"],
+        fractional && ["credit", "credit"], multistep && ["progress", "progress"], ["outcome", null], ["cost", "cost"], ["steps", "steps"],
         ["tokens", "tokens"], ["duration", "duration"], ["started", "time"], ["trial", null]
       ].filter(Boolean);
-      const numeric = new Set(["reward", "credit", "cost", "steps", "tokens", "duration"]);
+      const numeric = new Set(["reward", "credit", "progress", "cost", "steps", "tokens", "duration"]);
       const header = el("tr", {}, columns.map(([label, sort]) =>
         el("th", { class: [sort && "sortable", sort === state.filters.sort && "sorted", numeric.has(label) && "num"].filter(Boolean).join(" "),
                    onclick: sort && (() => setFilter("sort", sort, sort === state.filters.sort)) },
@@ -476,6 +483,7 @@ module LemansViewer # :nodoc: all
         el("td", { title: r.model }, shortModel(r.model)),
         el("td", { class: "num" }, fmt.num(r.reward)),
         fractional && el("td", { class: "num" }, fmt.num(r.credit)),
+        multistep && el("td", { class: "num", title: "steps completed / task steps" }, fmt.progress(r)),
         el("td", {}, outcomeBadge(r)),
         el("td", { class: "num" }, fmt.cost(r.cost_usd)),
         el("td", { class: "num" }, fmt.int(r.steps)),
@@ -533,6 +541,7 @@ module LemansViewer # :nodoc: all
         el("div", { class: "facts" },
           fact("reward", fmt.num(row.reward)),
           row.credit !== row.reward && fact("credit", fmt.num(row.credit)),
+          row.completed_steps !== null && row.completed_steps !== undefined && fact("progress", fmt.progress(row)),
           fact("cost", fmt.cost(row.cost_usd)),
           fact("steps", fmt.int(row.steps)),
           fact("tokens", `${fmt.int(usage.input_tokens)} in · ${fmt.int(usage.output_tokens)} out · ${fmt.int(usage.cached_tokens)} cached`),

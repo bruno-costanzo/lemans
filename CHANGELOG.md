@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Multistep results record `total_steps`; `lemans report` now shows a `progress` column (steps completed, `2/5`).
+
 ## [1.5.0] - 2026-10-05
 
 - `lemans restart --recover` continues the failed step's agent session

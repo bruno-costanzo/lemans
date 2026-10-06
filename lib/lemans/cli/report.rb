@@ -7,10 +7,10 @@ module Lemans
     # Renders stored results as a table or CSV. The store is the source of
     # truth; rows are plain hashes derived from Result records.
     class Report
-      COLUMNS = %i[task agent model reward credit outcome scored cost_usd steps tokens duration started_at trial
-                   tags detail].freeze
-      TABLE_COLUMNS = %i[task agent model reward credit outcome cost_usd steps tokens duration trial].freeze
-      NUMERIC_COLUMNS = %i[reward credit cost_usd steps tokens duration].freeze
+      COLUMNS = %i[task agent model reward credit completed_steps total_steps outcome scored cost_usd steps tokens
+                   duration started_at trial tags detail].freeze
+      TABLE_COLUMNS = %i[task agent model reward credit progress outcome cost_usd steps tokens duration trial].freeze
+      NUMERIC_COLUMNS = %i[reward credit progress cost_usd steps tokens duration].freeze
 
       attr_reader :rows, :unreadable
 
@@ -29,6 +29,8 @@ module Lemans
             model: result.model,
             reward: result.reward,
             credit: result.credit,
+            completed_steps: result.steps&.size,
+            total_steps: result.total_steps,
             outcome: result.status,
             scored: result.scored?,
             detail: result.detail,
@@ -43,6 +45,9 @@ module Lemans
             tags: result.tags.map(&:to_s)
           }
         end
+
+        # Steps completed out of the task's steps; unknown for older runs halted midway
+        def progress_ratio(row) = row[:total_steps] && Rational(row[:completed_steps], row[:total_steps])
 
         # A bench may name no model at all (nop, oracle); the summary needs a
         # label, not a nil for ljust to crash on.
@@ -91,7 +96,7 @@ module Lemans
       end
 
       def initialize(rows, unreadable: 0)
-        @rows = rows
+        @rows = with_total_steps(rows)
         @unreadable = unreadable
       end
 
@@ -103,7 +108,9 @@ module Lemans
       # Trials that never measured the column sink to the bottom either way.
       def order_by!(column)
         column = self.class.sort_column(column, allowed: TABLE_COLUMNS)
-        @rows = self.class.sort_rows(rows, descending: NUMERIC_COLUMNS.include?(column)) { it[column] }
+        @rows = self.class.sort_rows(rows, descending: NUMERIC_COLUMNS.include?(column)) do |row|
+          column == :progress ? self.class.progress_ratio(row) : row[column]
+        end
         self
       end
 
@@ -113,13 +120,21 @@ module Lemans
 
       def fractional? = rows.any? { it[:credit] && it[:credit] != it[:reward] }
 
-      def table_columns = fractional? ? TABLE_COLUMNS : TABLE_COLUMNS - [ :credit ]
+      def multistep? = rows.any? { it[:completed_steps] }
+
+      def table_columns
+        TABLE_COLUMNS - [ (:credit unless fractional?), (:progress unless multistep?) ].compact
+      end
 
       def to_rows
         [ table_columns.map(&:to_s) ] +
           rows.map do |row|
             table_columns.map do |column|
-              display(column == :model ? short_model(row[:model]) : row[column])
+              case column
+              when :model then display(short_model(row[:model]))
+              when :progress then progress(row)
+              else display(row[column])
+              end
             end
           end
       end
@@ -149,6 +164,17 @@ module Lemans
 
       private
 
+      # Older multistep results lack the task's step count: a run of the same
+      # task that reached its final verification tells it.
+      def with_total_steps(rows)
+        known = rows.select { it[:total_steps] }.to_h { [ it[:task], it[:total_steps] ] }
+        rows.map do |row|
+          next row if row[:total_steps] || !row[:completed_steps] || !known[row[:task]]
+
+          row.merge(total_steps: known[row[:task]])
+        end
+      end
+
       # The rank divides solved by scored, not total: invalid trials measured nothing.
       def stats(group)
         totals = self.class.tally(group).merge(cost_usd: group.sum { it[:cost_usd].to_f })
@@ -168,6 +194,8 @@ module Lemans
       end
 
       def short_model(model) = self.class.short_model(model)
+
+      def progress(row) = row[:completed_steps] ? "#{row[:completed_steps]}/#{row[:total_steps] || "?"}" : "-"
 
       def display(value)
         case value

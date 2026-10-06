@@ -158,6 +158,8 @@ module Lemans
 
     attr_accessor :tags, :metadata, :restarted_from
 
+    attr_writer :total_steps
+
     attr_reader :phases, :steps
 
     # outcome-related attributes (we use setter-like methods, not accessors)
@@ -177,6 +179,7 @@ module Lemans
       @metadata = {}
       @phases = []
       @steps = nil
+      @total_steps = nil
       @restarted_from = nil
 
       @id = id || "#{task}__#{SecureRandom.alphanumeric(7)}"
@@ -252,6 +255,9 @@ module Lemans
       (1..steps.to_a.size).count { names.include?(:"agent.#{it + 1}") }
     end
 
+    # Older multistep files lack the count; a run graded on its final step still tells it.
+    def total_steps = @total_steps || (steps.size if steps && final_graded?)
+
     # The step whose verification ran last, nil when none did
     def verified_step
       name = phases.reverse.find { it.name.to_s.match?(/\Averifier(\.\d+)?\z/) }&.name or return nil
@@ -290,6 +296,9 @@ module Lemans
 
     private def aggregate_usage = steps.filter_map(&:usage).reduce(:+)
 
+    # The final verification is the one phase without a step index
+    private def final_graded? = phases.any? { it.name == :verifier }
+
     def as_json(**)
       {
         trial: id, task:, agent:, model:, index:,
@@ -297,7 +306,7 @@ module Lemans
         restarted_from: restarted_from&.as_json,
         lemans_version: VERSION,
         tags:, metadata:, phases: phases.map(&:as_json),
-        steps: steps&.map(&:as_json),
+        steps: steps&.map(&:as_json), total_steps:,
         reward:, credit:, outcome: outcome.as_json, usage: usage&.as_json, duration:,
         started_at: started_at&.iso8601,
         finished_at: finished_at&.iso8601
@@ -315,6 +324,7 @@ module Lemans
         result.tags = data[:tags] || []
         result.metadata = data[:metadata] || {}
         result.restarted_from = Restart.new(**data[:restarted_from]) if data[:restarted_from]
+        result.total_steps = data[:total_steps]
         phases_from(data).each { result.phases << it }
 
         # Steps first: the stored outcome/usage below override the aggregates.
@@ -349,6 +359,7 @@ module Lemans
         )
         result.tags = definition.tags
         result.metadata = definition.metadata
+        result.total_steps = definition.steps if definition.multistep?
         result
       end
 
